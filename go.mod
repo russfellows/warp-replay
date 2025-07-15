@@ -21,7 +21,7 @@ require (
 	github.com/minio/md5-simd v1.1.2
 	github.com/minio/minio-go/v7 v7.0.93
 	github.com/minio/pkg/v3 v3.1.8
-	github.com/minio/warp v1.1.6
+	github.com/minio/warp v1.2.0
 	github.com/minio/websocket v1.6.0
 	github.com/muesli/termenv v0.16.0
 	github.com/posener/complete v1.2.3
