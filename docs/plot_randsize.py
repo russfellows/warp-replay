@@ -1,9 +1,13 @@
 """
-Generate a comparison plot of the legacy log2 distribution vs the new
-lognormal distribution used by --obj.randsize in warp-replay.
+Generate a comparison plot of the log₂ distribution vs the lognormal
+distribution for warp's --obj.rand-log2 and --obj.rand-logn flags.
+
+Both panels use --obj.size=10 MiB (the typical / user-facing size).
+  --obj.rand-log2:  obj.size = target average  → max = 10 MiB / 0.179151 ≈ 55.8 MiB
+  --obj.rand-logn:  obj.size = target median   → max = 10 MiB × 10        = 100 MiB
 
 Plotted as histograms with SIZE on the X axis (log2 scale) and object
-count on the Y axis.  Parameters: maxSize=100MB, 50,000 samples, sigma=1.0.
+count on the Y axis.  Parameters: 50,000 samples, sigma=1.0.
 """
 
 import math
@@ -15,16 +19,23 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 # --- Parameters -------------------------------------------------------
-MAX_SIZE = 100 * 1024 * 1024   # 100 MB
+# Both panels use the same user-facing "typical" size.
+TYPICAL_SIZE = 10 * 1024 * 1024   # --obj.size=10MiB
+
+# Internally computed maxima (mirrors cli/generator.go logic)
+LOG2_AVG_FACTOR = 0.179151
+MAX_LOG2 = int(TYPICAL_SIZE / LOG2_AVG_FACTOR)   # ≈ 55.8 MiB
+MAX_LOGN = TYPICAL_SIZE * 10                       # = 100 MiB
+
 MIN_SIZE = 1
 SIGMA    = 1.0
 N        = 50_000
 rng      = random.Random(42)
 
 def fmt_bytes(n):
-    for unit, div in [("GB", 1<<30), ("MB", 1<<20), ("KB", 1<<10)]:
+    for unit, div in [("GiB", 1<<30), ("MiB", 1<<20), ("KiB", 1<<10)]:
         if n >= div:
-            return f"{n/div:.0f} {unit}"
+            return f"{n/div:.1f} {unit}"
     return f"{n} B"
 
 # --- Log2 (legacy) sampler -------------------------------------------
@@ -40,7 +51,8 @@ def legacy_exp_rand_size(min_size, max_size):
     log_s  = r * delta
     if log_s > 1:
         return 1 + int(2 ** (log_s + log_min))
-    return 1 + min_size + int(r * 2 ** (log_min + 1))
+    # Use log_s (not r) to be continuous with the log branch above — mirrors Go fix.
+    return 1 + min_size + int(log_s * 2 ** (log_min + 1))
 
 # --- Lognormal (new) sampler -----------------------------------------
 def lognormal_rand_size(min_size, max_size, sigma=1.0):
@@ -53,27 +65,30 @@ def lognormal_rand_size(min_size, max_size, sigma=1.0):
     return max(min_size, min(max_size, s))
 
 # --- Sample -----------------------------------------------------------
-legacy_sizes    = [legacy_exp_rand_size(MIN_SIZE, MAX_SIZE)       for _ in range(N)]
-lognormal_sizes = [lognormal_rand_size(MIN_SIZE, MAX_SIZE, SIGMA)  for _ in range(N)]
+# Both use --obj.size=10MiB as input; max is computed internally.
+legacy_sizes    = [legacy_exp_rand_size(MIN_SIZE, MAX_LOG2)          for _ in range(N)]
+lognormal_sizes = [lognormal_rand_size(MIN_SIZE, MAX_LOGN, SIGMA)    for _ in range(N)]
 
 legacy_mean    = sum(legacy_sizes)    / N
 lognormal_mean = sum(lognormal_sizes) / N
+lognormal_median = sorted(lognormal_sizes)[N // 2]
 
-# Bins: one per doubling, from 128 B to 100 MB
-bin_edges = [2**k for k in range(7, 28) if 2**k <= MAX_SIZE * 1.01]
-bin_edges = sorted(set(bin_edges + [MAX_SIZE]))
+# Bins: one per doubling, covering both distributions
+max_overall = max(MAX_LOG2, MAX_LOGN)
+bin_edges = [2**k for k in range(7, 32) if 2**k <= max_overall * 1.01]
+bin_edges = sorted(set(bin_edges + [max_overall]))
 
 # --- Plot -------------------------------------------------------------
 fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=False)
 fig.suptitle(
-    f"warp-replay --obj.randsize: Object Size Distribution  |  maxSize=100 MB, n={N:,}",
+    f"warp --obj.size=10MiB: same user input, different distributions  |  n={N:,}, \u03c3={SIGMA}",
     fontsize=12, fontweight="bold"
 )
 
-tick_bytes  = [128, 1<<10, 8<<10, 64<<10, 512<<10, 4<<20, 32<<20, MAX_SIZE]
-tick_labels = ["128 B", "1 KB", "8 KB", "64 KB", "512 KB", "4 MB", "32 MB", "100 MB"]
+tick_bytes  = [128, 1<<10, 8<<10, 64<<10, 512<<10, 4<<20, 32<<20, 128<<20]
+tick_labels = ["128 B", "1 KiB", "8 KiB", "64 KiB", "512 KiB", "4 MiB", "32 MiB", "128 MiB"]
 
-def make_panel(ax, data, title, color, mean_val, annot):
+def make_panel(ax, data, title, color, mean_val, median_val, annot):
     counts, edges = np.histogram(data, bins=bin_edges)
     centres = [math.sqrt(edges[i] * edges[i+1]) for i in range(len(edges)-1)]
     widths  = [edges[i+1] - edges[i]             for i in range(len(edges)-1)]
@@ -83,8 +98,8 @@ def make_panel(ax, data, title, color, mean_val, annot):
     ax.set_xscale("log", base=2)
     ax.set_xticks(tick_bytes)
     ax.set_xticklabels(tick_labels, rotation=35, ha="right", fontsize=8.5)
-    ax.set_xlim(100, MAX_SIZE * 1.4)
-    ax.set_xlabel("Object Size  (log₂ scale)", fontsize=10)
+    ax.set_xlim(100, max_overall * 1.8)
+    ax.set_xlabel("Object Size  (log\u2082 scale)", fontsize=10)
     ax.set_ylabel("Number of Objects", fontsize=10)
     ax.set_title(title, fontsize=10, fontweight="bold")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
@@ -99,15 +114,18 @@ def make_panel(ax, data, title, color, mean_val, annot):
             va="top", bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
 
 make_panel(axes[0], legacy_sizes,
-           "--obj.rand-log2  (legacy log₂)", "#e07b54", legacy_mean,
-           "Equal count per doubling\n(flat in log₂-space)\nNo \"typical\" object size")
+           f"--obj.size=10MiB --obj.rand-log2\n(avg=10 MiB \u2192 max={fmt_bytes(MAX_LOG2)} computed internally)",
+           "#e07b54", legacy_mean, legacy_mean,
+           f"Equal count per doubling\n(flat in log\u2082-space)\nNo \"typical\" object size\nmax={fmt_bytes(MAX_LOG2)}")
+
 make_panel(axes[1], lognormal_sizes,
-           f"--obj.rand-logn  (lognormal, σ={SIGMA})", "#4c8cbf", lognormal_mean,
-           f"Bell curve in log-space\nMedian = maxSize/10 = 10 MB\nσ={SIGMA} → ~9 doublings span")
+           f"--obj.size=10MiB --obj.rand-logn\n(median=10 MiB \u2192 max={fmt_bytes(MAX_LOGN)} computed internally)",
+           "#4c8cbf", lognormal_mean, lognormal_median,
+           f"Bell curve in log-space\nMedian={fmt_bytes(int(lognormal_median))}\n\u03c3={SIGMA} \u2192 ~9 doublings span\nmax={fmt_bytes(MAX_LOGN)}")
 
 plt.tight_layout()
 out = "docs/randsize_distribution.png"
 plt.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {out}")
-print(f"Legacy mean:    {fmt_bytes(int(legacy_mean))}  ({legacy_mean/MAX_SIZE*100:.1f}% of max)")
-print(f"Lognormal mean: {fmt_bytes(int(lognormal_mean))}  ({lognormal_mean/MAX_SIZE*100:.1f}% of max)")
+print(f"Log2   input=10MiB, computed max={fmt_bytes(MAX_LOG2)}, mean={fmt_bytes(int(legacy_mean))}  ({legacy_mean/MAX_LOG2*100:.1f}% of max)")
+print(f"Logn   input=10MiB, computed max={fmt_bytes(MAX_LOGN)}, mean={fmt_bytes(int(lognormal_mean))} ({lognormal_mean/MAX_LOGN*100:.1f}% of max), median={fmt_bytes(int(lognormal_median))}")

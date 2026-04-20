@@ -88,38 +88,51 @@ warp-replay run --full benchmark.yaml
 
 ## Realistic Object Size Distribution (`--obj.randsize`)
 
-The original `--obj.randsize` flag uses a **log₂ (log-base-2) distribution**: it samples
-uniformly in log₂-space, which means every doubling of size gets equal probability weight.
-The resulting curve has no "typical" object size — objects are as likely to fall in the
-4–8 MB range as in the 50–100 MB range, which does not resemble real-world workloads.
+Two random-size distributions are available, selected by flag. In both cases
+**`--obj.size` specifies the _typical_ object size** — the value a user would
+naturally think of as "average" — and warp derives the internal maximum automatically.
+Use the `min,max` two-value form (e.g. `--obj.size=1MiB,200MiB`) to set bounds
+explicitly if you need precise control.
 
-warp adds an **optional lognormal distribution** (`--obj.rand-logn`) — the standard statistical
-model for real-world file system and object store size distributions. The original log₂
-distribution is fully preserved via `--obj.randsize` (unchanged) and `--obj.rand-log2` (alias).
-The lognormal is parameterised so its **median sits at `maxSize / 10`** and with the default
-σ=1.0 it spans approximately 8–9 doublings, closely matching the _spread_ of the original
-while producing a realistic bell-curve shape in log-space (many mid-sized objects, a natural
-tail of large ones). The mean is approximately **16.5% of maxSize** — nearly identical to
-the original's 17.9%.
+### log₂ distribution (`--obj.randsize` / `--obj.rand-log2`)
 
-Both distributions are shown below in the same sorted-sample format used in the upstream README
-(X = objects sorted ascending by size, Y = size in bytes):
+Samples uniformly in log₂-space: every doubling of the size range gets equal
+probability weight, producing a right-skewed distribution with a long tail.
 
-![Comparison of legacy log₂ vs. new lognormal --obj.randsize distribution](docs/randsize_distribution.png)
+- **`--obj.size`** = target **average** (mean)
+- Internal max = `--obj.size ÷ 0.179` (~5.6×)
+- Observed mean ≈ 18% of internal max
+- Median ≈ 35% of mean (many small objects, long tail of large ones)
 
-*50,000 samples, maxSize=100 MB. Left: legacy log₂ (`--obj.randsize` / `--obj.rand-log2`) — perfectly flat, equal count
-per doubling, no "typical" size. Right: lognormal (`--obj.rand-logn`, σ=1.0, median=10 MB) —
-clear bell curve, similar span.*
+### lognormal distribution (`--obj.rand-logn`)
+
+A bell curve in log-space — the standard statistical model for real-world file
+system and object store size distributions.
+
+- **`--obj.size`** = target **median**
+- Internal max = `--obj.size × 10`
+- Observed median ≈ `--obj.size` (by construction)
+- Observed mean ≈ 150% of `--obj.size` (lognormal mean > median due to right tail)
+- Default σ=1.0 spans ~9 doublings at 3σ
+
+Both distributions were sampled from the actual production Go functions
+(`GetExpRandSize` / `GetLogNormalRandSize`) using 100,000 samples each:
+
+![Comparison of log₂ vs. lognormal --obj.randsize distribution](docs/randsize_distribution.png)
+
+*100,000 samples from real Go code, `--obj.size=10 MiB`. Left: log₂ — equal count per
+doubling, continuous ramp, mean=10 MiB. Right: lognormal (σ=1.0) — bell curve in
+log-space, median=10 MiB, mean≈15 MiB.*
 
 ### Tuning the spread
 
 Three flags control random-size behaviour:
 
-| Flag | Distribution | Backward compat? |
-|------|-------------|-----------------|
-| `--obj.randsize` | Legacy log₂ (original upstream behaviour) | **Yes** — unchanged |
-| `--obj.rand-log2` | Legacy log₂ (explicit alias) | Yes |
-| `--obj.rand-logn` | Lognormal (new, realistic) | — |
+| Flag | Distribution | `--obj.size` means | Backward compat? |
+|------|--------------|--------------------|-----------------|
+| `--obj.randsize` | log₂ | target average | **Yes** — unchanged |
+| `--obj.rand-log2` | log₂ | target average | Yes |
+| `--obj.rand-logn` | Lognormal | target median | — |
 
 `--obj.randsize.sigma` applies only to `--obj.rand-logn` and controls the log-space standard
 deviation (default **1.0**, ~9 doublings of spread):
@@ -131,20 +144,36 @@ deviation (default **1.0**, ~9 doublings of spread):
 | `1.5` | Wide — ~13 doublings | Archival / mixed-tier workloads |
 
 ```bash
-# Original log₂ behaviour (unchanged, backward-compatible)
-warp put --obj.size=100MiB --obj.randsize
+# log₂: --obj.size is the target average; warp sets max internally (~5.6×)
+warp put --obj.size=10MiB --obj.randsize
 
-# Explicit log₂ alias
-warp put --obj.size=100MiB --obj.rand-log2
+# log₂ explicit alias
+warp put --obj.size=10MiB --obj.rand-log2
 
-# Lognormal (bell curve, realistic workloads)
-warp put --obj.size=100MiB --obj.rand-logn
+# lognormal: --obj.size is the target median; warp sets max internally (×10)
+warp put --obj.size=10MiB --obj.rand-logn
 
-# Lognormal with tighter distribution (σ=0.75)
-warp put --obj.size=100MiB --obj.rand-logn --obj.randsize.sigma=0.75
+# lognormal with tighter spread (σ=0.75)
+warp put --obj.size=10MiB --obj.rand-logn --obj.randsize.sigma=0.75
+
+# Explicit bounds (power-user override — obj.size is exact min,max, no transformation)
+warp put --obj.size=1MiB,200MiB --obj.rand-logn
 ```
 
 YAML config equivalents: `obj.rand-size` (log₂), `obj.rand-log-2` (log₂), `obj.rand-log-n` (lognormal), `obj.rand-size-sigma`.
+
+### Regenerating the distribution plot
+
+The plot above is produced from 100,000 samples drawn from the actual Go distribution
+functions. To regenerate it after code changes:
+
+```bash
+# Sample the real Go functions → TSV
+go run ./docs/sample_distributions -n 100000 -typical 10MiB > docs/dist_samples.tsv
+
+# Plot with polars + matplotlib (requires uv)
+uv run python docs/plot_actual_distributions.py
+```
 
 ---
 
@@ -228,4 +257,4 @@ polarwarp warp-put-*.csv.zst
 
 ## License
 
-AGPL-3.0 — same as upstream warp. Replay additions © 2025 Signal65 / Futurum Group LLC.
+AGPL-3.0 — same as upstream warp. All addtions in this fork are © 2026 Signal65 / Futurum Group LLC.

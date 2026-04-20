@@ -24,3 +24,7 @@ dist
 # local secrets — never commit
 .env
 warp-test
+
+# Generated distribution sample data (re-create with: go run ./docs/sample_distributions)
+docs/dist_samples.tsv
+docs/dist_samples.log

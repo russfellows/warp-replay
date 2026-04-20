@@ -223,6 +223,8 @@ func GetExpRandSize(rng *rand.Rand, minSize, maxSize int64) int64 {
 	if logSize > 1 {
 		return 1 + int64(math.Pow(2, logSize+logSizeMinSize))
 	}
-	// For lowest part, do equal distribution
-	return 1 + minSize + int64(random*math.Pow(2, logSizeMinSize+1))
+	// For lowest part, do equal (linear) distribution within the bottom doubling.
+	// logSize ∈ [0,1) here, so this formula is continuous with the log branch above:
+	// at logSize=1: logSize×2^(logSizeMinSize+1) == 2^(logSize+logSizeMinSize). No gap.
+	return 1 + minSize + int64(logSize*math.Pow(2, logSizeMinSize+1))
 }
