@@ -26,11 +26,15 @@ tool. It adds two significant capabilities on top of upstream warp:
 ## Building
 
 ```bash
-# Recommended: injects correct version/commit info
-make build
+make           # build the warp binary (injects version/commit info)
+make build     # same as above
+sudo make install              # install to /usr/local/bin
+make install DESTDIR=$HOME/.local/bin  # install to user dir
+make test      # run tests
+make clean     # remove built binary
 
-# Quick dev build (version shows as "dev")
-go build -o warp-replay .
+# Quick dev build without version info
+go build -o warp .
 ```
 
 Requires Go 1.21+.
@@ -42,7 +46,7 @@ Requires Go 1.21+.
 ### Workload Replay (`replay`)
 
 ```bash
-warp-replay replay --file=warp-put-2026-04-07[162451]-abcd.csv.zst \
+warp replay --file=warp-put-2026-04-07[162451]-abcd.csv.zst \
     --bucket=my-bucket \
     --host=s3target:9000 \
     --access-key=mykey \
@@ -72,8 +76,8 @@ Adding `--full` to any benchmark command writes **both** output files:
 | `<benchdata>.json.zst` | Aggregated summary (same as default) |
 
 ```bash
-warp-replay put --host=... --full
-warp-replay run --full benchmark.yaml
+warp put --host=... --full
+warp run --full benchmark.yaml
 ```
 
 > **Streaming, not in-memory:** A `--full` implementation has been submitted as a PR to
@@ -190,7 +194,7 @@ richer, and more flexible analysis** of `.csv.zst` trace files, use
 
 ```bash
 # Built-in analyzer (slow on large traces)
-warp-replay analyze --full warp-put-2026-04-07[162451]-abcd.csv.zst
+warp analyze --full warp-put-2026-04-07[162451]-abcd.csv.zst
 
 # polarWarp — recommended for all serious analysis
 pip install polarwarp   # or see https://github.com/russfellows/polarWarp
@@ -206,7 +210,7 @@ for benchmarks and usage.
 ### Comparing runs
 
 ```bash
-warp-replay cmp before.csv.zst after.csv.zst
+warp cmp before.csv.zst after.csv.zst
 ```
 
 Or use [polarWarp](https://github.com/russfellows/polarWarp) for side-by-side
@@ -234,10 +238,10 @@ InfluxDB integration, and server profiling. For Iceberg-specific details see
 # Clone and build
 git clone https://github.com/russfellows/warp-replay.git
 cd warp-replay
-make build
+make
 
 # Run a PUT benchmark with full per-transaction logging
-./warp-replay put --host=minio:9000 --access-key=minio --secret-key=minio123 \
+./warp put --host=minio:9000 --access-key=minio --secret-key=minio123 \
     --duration=60s --full
 
 # Analyze with polarWarp (recommended)
@@ -245,10 +249,10 @@ make build
 polarwarp warp-put-*.csv.zst
 
 # Or with the built-in analyzer
-./warp-replay analyze --full warp-put-*.csv.zst
+./warp analyze --full warp-put-*.csv.zst
 
 # Replay the recorded workload against a different target
-./warp-replay replay --file=warp-put-*.csv.zst \
+./warp replay --file=warp-put-*.csv.zst \
     --bucket=test-bucket --host=new-target:9000 \
     --access-key=minio --secret-key=minio123
 ```
