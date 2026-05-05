@@ -25,6 +25,10 @@ dist
 .env
 warp-test
 
+# Python tooling (uv/pyenv artifacts — local environment only, not part of the Go project)
+.python-version
+.venv/
+
 # Generated distribution sample data (re-create with: go run ./docs/sample_distributions)
 docs/dist_samples.tsv
 docs/dist_samples.log

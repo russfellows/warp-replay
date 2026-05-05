@@ -52,6 +52,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 )
+
 // parquetEntry records per-object metadata needed for the GET benchmark phase.
 // We store it separately from generator.Object because we need the row-group
 // layout that was baked into each object at upload time.
@@ -319,7 +320,6 @@ func (p *Parquet) doParquetGet(
 	rng *rand.Rand,
 	entry parquetEntry,
 ) (totalBytes int64, firstByte *time.Time, err error) {
-
 
 	footerSize := p.FooterSize
 	if footerSize <= 0 {
