@@ -18,8 +18,10 @@ tool. It adds two significant capabilities on top of upstream warp:
 | Document | Description |
 |----------|-------------|
 | [docs/README-Upstream.md](docs/README-Upstream.md) | Full upstream warp documentation (benchmarks, configuration, analysis, distributed mode, InfluxDB, …) |
+| [docs/README_PARQUET.md](docs/README_PARQUET.md) | Parquet benchmark (`warp parquet`) — three-phase AI/ML Parquet I/O: footer range GET, Thrift decode, parallel row-group GETs |
 | [docs/README_ICEBERG.md](docs/README_ICEBERG.md) | Iceberg REST catalog benchmarks (`iceberg catalog-read`, `catalog-commits`, `catalog-mixed`, `sustained`) |
 | [docs/Warp-streaming-log-Design.md](docs/Warp-streaming-log-Design.md) | Design notes for the streaming log writer |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and version notes |
 
 ---
 
@@ -42,6 +44,31 @@ Requires Go 1.21+.
 ---
 
 ## New Features in warp-replay
+
+### Parquet Benchmark (`parquet`) — *v1.4.1-replay.2*
+
+Benchmarks the full AI/ML Parquet three-phase I/O access pattern against any S3-compatible
+object store:
+
+1. **Footer range GET** — byte-range GET of the last `--footer-size` bytes.
+2. **Footer parse** — decode the Thrift CompactProtocol `FileMetaData` to extract
+   row-group offsets. This is a live correctness check: a server that returns
+   garbage bytes for a range request will fail here.
+3. **Row-group GETs** — `--rg-reads` parallel byte-range GETs at the real
+   row-group offsets from step 2.
+
+Objects are synthetically generated with real PAR1 magic and a valid Thrift-encoded
+footer — no external Parquet library required.
+
+```bash
+warp parquet --host localhost:9000 --access-key minioadmin --secret-key minioadmin \\
+  --bucket parquet-bench --objects 100 --obj.size 128MiB \\
+  --row-groups 10 --rg-size 8MiB --footer-size 128KiB \\
+  --rg-reads 2 --concurrent 8 --duration 2m
+```
+
+See [docs/README_PARQUET.md](docs/README_PARQUET.md) for the full flag reference,
+testing methodology, and worked examples.
 
 ### Workload Replay (`replay`)
 
@@ -223,7 +250,7 @@ comparison with statistical significance testing and charts.
 warp-replay supports every benchmark from upstream warp unchanged:
 `get`, `put`, `delete`, `list`, `stat`, `mixed`, `versioned`, `multipart`,
 `multipart-put`, `append`, `zip`, `snowball`, `fanout`, `retention`, and
-the full Iceberg REST catalog suite.
+the full Iceberg REST catalog suite — plus the new `parquet` benchmark.
 
 See [docs/README-Upstream.md](docs/README-Upstream.md) for complete documentation
 of all benchmarks, configuration options, distributed mode, YAML config files,
