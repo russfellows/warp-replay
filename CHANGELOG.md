@@ -11,7 +11,35 @@ the second fork-specific release on that base.
 
 ## v1.4.1-replay.2 — 2026-05-05
 
-**New feature: Parquet benchmark (`warp parquet`)**
+**New features: Parquet benchmark (`warp parquet`) and h2c transport (`--h2c`)**
+
+### New feature: h2c transport (`--h2c`)
+
+Adds HTTP/2 cleartext (h2c, prior-knowledge) transport support to every benchmark
+command. This is specifically useful for servers like s3-ultra that speak h2c
+natively — warp now exercises the same protocol path as production AI/ML clients
+without requiring TLS termination overhead.
+
+**New flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--h2c` | false | Use HTTP/2 cleartext (no TLS). Implies `--insecure`, overrides `--tls`/`--ktls`. |
+| `--h2c-conns` | 0 (auto) | Parallel h2c TCP connections. `0` = auto: falls back to HTTP/1.1 below 64 concurrent, uses `ceil(concurrent/32)` connections at ≥64. Set `≥1` to force h2c at any concurrency. |
+| `--h2c-window-mib` | 0 (→ 4 MiB) | HTTP/2 stream receive window in MiB. The spec default (64 KiB) causes flow-control stalls for objects larger than 64 KiB. Rule of thumb: set to ≥ 2× largest object size. |
+
+**Implementation highlights:**
+- `h2cPool`: round-robin pool of independent `http2.Transport` instances, one TCP
+  socket each. Gives socket-level parallelism comparable to HTTP/1.1 (no head-of-line
+  blocking across unrelated operations).
+- Window sizes wired via `http.HTTP2Config` + `http2.ConfigureTransports` — the only
+  Go stdlib path that exposes per-stream receive buffer control.
+- `--h2c` silently overrides `Secure: true` so users cannot accidentally request both
+  TLS and h2c simultaneously.
+
+---
+
+### New feature: Parquet benchmark (`warp parquet`)**
 
 This release adds the `parquet` benchmark command — the first benchmark in any warp
 variant to model the AI/ML Parquet I/O access pattern end-to-end. Parquet is the

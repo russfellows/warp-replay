@@ -214,9 +214,11 @@ func getClient(ctx *cli.Context, host string) (*minio.Client, error) {
 	} else if ctx.String("lookup") == "path" {
 		lookup = minio.BucketLookupPath
 	}
+	// h2c is cleartext HTTP/2 — never use TLS regardless of other flags.
+	useTLS := !ctx.Bool("h2c") && (ctx.Bool("tls") || ctx.Bool("ktls"))
 	cl, err := minio.New(host, &minio.Options{
 		Creds:           creds,
-		Secure:          ctx.Bool("tls") || ctx.Bool("ktls"),
+		Secure:          useTLS,
 		Region:          ctx.String("region"),
 		BucketLookup:    lookup,
 		CustomMD5:       md5simd.NewServer().NewHash,
@@ -241,8 +243,12 @@ func clientTransport(ctx *cli.Context) http.RoundTripper {
 
 // clientTransportWithLocalIP creates a transport that binds outbound connections
 // to localIP (empty string means no binding, OS picks the source address).
+// --h2c takes priority: it speaks HTTP/2 frames over plain TCP and is
+// incompatible with TLS, so --tls/--ktls are silently ignored when --h2c is set.
 func clientTransportWithLocalIP(ctx *cli.Context, localIP string) http.RoundTripper {
 	switch {
+	case ctx.Bool("h2c"):
+		return newH2CTransport(ctx, localIP)
 	case ctx.Bool("ktls"):
 		return clientTransportKTLS(ctx, localIP)
 	case ctx.Bool("tls"):

@@ -273,6 +273,23 @@ var ioFlags = []cli.Flag{
 		Hidden: true,
 	},
 	cli.BoolFlag{
+		Name:  "h2c",
+		Usage: "use HTTP/2 cleartext (h2c, prior knowledge) — HTTP/2 frames over plain TCP, no TLS; implies --insecure and overrides --tls/--ktls; requires server-side h2c support (e.g. s3-ultra)",
+	},
+	cli.IntFlag{
+		Name:  "h2c-conns",
+		Usage: "number of parallel h2c TCP connections (0=auto: uses HTTP/1.1 for <64 concurrent, ceil(concurrent/32) h2c conns for ≥64 concurrent; set ≥1 to force h2c at any concurrency). Each connection carries independent streams, giving socket-level parallelism comparable to HTTP/1.1.",
+		Value: 0,
+	},
+	cli.IntFlag{
+		Name: "h2c-window-mib",
+		Usage: "HTTP/2 stream receive window size in MiB (0=default 4 MiB). " +
+			"Controls how much data the server can send before waiting for a WINDOW_UPDATE. " +
+			"The HTTP/2 spec default (64 KiB) causes severe stalls for objects larger than 64 KiB. " +
+			"Rule of thumb: set to ≥ 2× your largest object size (e.g. 16 for 8 MiB objects).",
+		Value: 0,
+	},
+	cli.BoolFlag{
 		Name:  "stress",
 		Usage: "stress test only and discard output",
 	},
