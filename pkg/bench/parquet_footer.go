@@ -609,15 +609,31 @@ func decodeColumnChunkList(data []byte, pos int) (ParquetRowGroup, int, error) {
 		size = int(b >> 4)
 	}
 
+	// A real Parquet row group spans ALL column chunks, not just the first.
+	// Track the union of [Offset, Offset+Size) across every column chunk so
+	// that a single byte-range GET covers the entire row group, matching
+	// the behaviour of real AI/ML data loaders (e.g. PyArrow, TensorStore).
+	minOffset := int64(-1)
+	maxEnd := int64(0)
+
 	for i := 0; i < size; i++ {
 		chunk, newPos, err := decodeColumnChunk(data, pos)
 		if err != nil {
 			return rg, newPos, fmt.Errorf("column_chunk[%d]: %w", i, err)
 		}
 		pos = newPos
-		if i == 0 {
-			rg = chunk
+		end := chunk.Offset + chunk.Size
+		if minOffset < 0 || chunk.Offset < minOffset {
+			minOffset = chunk.Offset
 		}
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+
+	if minOffset >= 0 {
+		rg.Offset = minOffset
+		rg.Size = maxEnd - minOffset
 	}
 	return rg, pos, nil
 }

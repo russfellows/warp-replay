@@ -55,6 +55,12 @@ var parquetFlags = []cli.Flag{
 		Usage: "Number of parallel row-group byte-range GETs per benchmark operation.",
 	},
 	cli.BoolFlag{
+		Name: "rg-sequential",
+		Usage: "Read --rg-reads consecutive row groups starting at a random offset " +
+			"instead of the default random-without-replacement selection. " +
+			"Use this to model sequential file-major access patterns (e.g. DLRM training).",
+	},
+	cli.BoolFlag{
 		Name:  "list-existing",
 		Usage: "Skip the upload phase; use objects already in the bucket as the GET corpus.",
 	},
@@ -91,8 +97,11 @@ DESCRIPTION:
        offsets.  This verifies the server returned the real footer bytes (not
        synthesised random data), which is the key correctness check for
        s3-ultra's Parquet footer storage feature.
-    3. Row-group GETs — --rg-reads parallel byte-range GETs at the real
-       row-group offsets from step 2.
+    3. Row-group GETs — --rg-reads parallel byte-range GETs.  By default, row
+       groups are selected randomly *without replacement* so each read in a
+       single operation hits a distinct row group.  With --rg-sequential, warp
+       picks --rg-reads *consecutive* row groups starting at a random offset,
+       modelling the DLRM/file-major sequential access pattern.
 
   Metrics
     Each benchmark op records the total byte count (footer + all row groups)
@@ -143,6 +152,7 @@ func mainParquet(ctx *cli.Context) error {
 		RowGroupSize:  int64(rgSize),
 		FooterSize:    int64(footerSize),
 		RGReads:       ctx.Int("rg-reads"),
+		RGSequential:  ctx.Bool("rg-sequential"),
 		ListExisting:  ctx.Bool("list-existing"),
 		ListPrefix:    ctx.String("prefix"),
 	}

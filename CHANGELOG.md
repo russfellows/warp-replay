@@ -9,6 +9,80 @@ the second fork-specific release on that base.
 
 ---
 
+## v1.4.1-replay.3 — 2026-05-07
+
+**Parquet benchmark: per-request op-log accuracy, op-log tracing for prepare phase,
+random-without-replacement RG selection, `--rg-sequential` flag, docs and scripts**
+
+### Fix: each row-group GET is now a separate op-log entry
+
+Previously `doParquetGet` issued `--rg-reads` byte-range GETs in parallel but
+rolled their bytes and timing into a single `Operation` record — e.g. four
+~8.3 MiB GETs appeared as one 33.3 MiB entry. The op-log goal is to exactly
+reflect every HTTP request sent on the wire; coalescing violated that.
+
+Now each goroutine constructs and sends its own `Operation` to the collector
+(with individual start/end timestamps, TTFB, and byte count) before the read
+loop completes. The outer wrapper op has been removed entirely.
+
+**Verified** (64 × 1 GiB DLRM files, `--rg-reads 4`, `--concurrent 20`, 60 s):
+- 308,124 individual `GET` entries — 100% for exactly one row group (~8.3 MiB)
+- Peak 80 concurrent in-flight GETs (20 threads × 4 goroutines each)
+- Modal steady-state concurrency: ~52
+
+### Fix: row-group selection is now random without replacement
+
+The previous code drew each of the `--rg-reads` indices independently with
+`rng.Intn(len(groups))` — the same row group could be selected twice in one
+operation, giving inflated throughput on servers with object-level caching.
+
+Replaced with a partial Fisher-Yates shuffle: `--rg-reads` distinct indices are
+selected in O(rg-reads) time with no allocations beyond the index slice.
+
+### New flag: `--rg-sequential`
+
+Picks `--rg-reads` **consecutive** row groups starting at a random offset instead
+of random-without-replacement. Models the DLRM and similar file-major sequential
+access patterns used during AI/ML training epochs.
+
+### New: prepare-phase ops recorded in op-log
+
+When `--list-existing` is used, the prepare phase previously issued a bucket LIST
+and per-file footer byte-range GETs with no trace visibility. These are now
+recorded as distinct op types:
+
+| Op type | Description |
+|---------|-------------|
+| `LIST` | Initial bucket listing — 1 per run |
+| `GET-FOOTER` | Per-file footer byte-range GET — N per run (2N when `--footer-size` triggers a retry) |
+| `GET` | Benchmark loop row-group byte-range GETs |
+
+The retry case (footer too small for first attempt) records **both** the failed
+attempt and the successful retry as separate `GET-FOOTER` ops, accurately
+reflecting the prepare-phase I/O cost.
+
+### Docs: README_PARQUET.md fully rewritten
+
+- Thread/goroutine/concurrency flow diagram explaining 20 threads → 80 in-flight GETs
+- Verified concurrency numbers from real DLRM runs
+- Op-log section: op types, awk inspection snippets
+- `--rg-sequential` flag documented
+- Corrected benchmark loop description (footer cached at startup, not re-fetched)
+
+### New: `scripts/` directory
+
+`scripts/run_parquet_bench.sh` — convenience wrapper for running the Parquet
+benchmark against s3-ultra with `--list-existing --keep-data --full`.
+Supports optional `--rg-sequential` argument.
+
+### Removed: `docs/issue-streaming-full-writer.md`
+
+Design proposal for the streaming zst writer, which has been fully implemented
+since v1.4.1-replay.1. The implemented design is documented in
+`docs/Warp-streaming-log-Design.md`.
+
+---
+
 ## v1.4.1-replay.2 — 2026-05-05
 
 **New features: Parquet benchmark (`warp parquet`) and h2c transport (`--h2c`)**
@@ -158,7 +232,7 @@ upstream warp on the PATH.
 ## Upstream base versions
 
 | warp-replay version | Upstream warp base |
-|---------------------|--------------------|
-| v1.4.1-replay.2 | v1.4.1 |
+|---------------------|-----------------|
+| v1.4.1-replay.3 | v1.4.1 |
 | v1.4.1-replay.1 | v1.4.1 |
 | v1.4.0-replay.1 | v1.4.0 |
