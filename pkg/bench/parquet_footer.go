@@ -337,7 +337,7 @@ func readVarint(data []byte, pos int) (uint64, int, bool) {
 func zigzagI64(v uint64) int64 { return int64((v >> 1) ^ -(v & 1)) }
 func zigzagI32(v uint64) int32 { return int32((v >> 1) ^ -(v & 1)) }
 
-func readFieldHeader(data []byte, pos, prevFieldID int) (fieldID int, typ byte, newPos int, isStop bool, ok bool) {
+func readFieldHeader(data []byte, pos, prevFieldID int) (fieldID int, typ byte, newPos int, isStop, ok bool) {
 	if pos >= len(data) {
 		return 0, 0, pos, false, false
 	}
@@ -613,7 +613,7 @@ func decodeColumnChunkList(data []byte, pos int) (ParquetRowGroup, int, error) {
 	// A real Parquet row group spans ALL column chunks, not just the first.
 	// Track the union of [Offset, Offset+Size) across every column chunk so
 	// that a single byte-range GET covers the entire row group, matching
-	// the behaviour of real AI/ML data loaders (e.g. PyArrow, TensorStore).
+	// the behavior of real AI/ML data loaders (e.g. PyArrow, TensorStore).
 	minOffset := int64(-1)
 	maxEnd := int64(0)
 
