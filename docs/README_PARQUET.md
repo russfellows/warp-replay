@@ -1,11 +1,304 @@
 # Warp Parquet Benchmark
 
-> **Status**: Feature-complete and validated against s3-ultra v0.2.0.
+> **Status**: Feature-complete and validated against s3-ultra with real DLRM training data
+> (64 × ~1 GiB Parquet files, 123 row groups/file, ~8.3 MiB/RG).
 
 The `warp parquet` command benchmarks the **AI/ML Parquet I/O access pattern** —
-the three-phase read sequence used by every modern query engine (Spark, DuckDB,
-Trino, PyArrow, Arrow Flight, …) when scanning Parquet objects stored in object
-storage.
+the access sequence used by every modern ML data loader (PyArrow, TensorStore,
+mosaic-streaming, …) when reading training data from object storage.
+
+---
+
+## Background: Why Parquet needs its own benchmark
+
+Standard S3 benchmarks measure raw GET throughput with full-object reads. Parquet
+access is structurally different:
+
+```
+Object layout
+─────────────
+  ┌──────────────────────────────────────────────────┐
+  │  PAR1  (4 bytes magic)                           │
+  │  Row Group 0  (rgSize bytes of columnar data)    │
+  │  Row Group 1                                     │
+  │  …                                               │
+  │  Row Group N-1                                   │
+  │  [optional padding]                              │
+  │  FileMetaData (Thrift CompactProtocol footer)    │
+  │  footer_length  (4-byte LE uint32)               │
+  │  PAR1  (4 bytes magic)                           │
+  └──────────────────────────────────────────────────┘
+```
+
+A query engine or ML loader needs only a subset of row groups per iteration:
+
+1. **Footer range GET** — `GET bytes=<last N>` to read the `FileMetaData` Thrift
+   footer. Done **once per file at startup** when `--list-existing` is used (the
+   normal production mode); cached in memory for the lifetime of the run.
+2. **Footer parse** — decode the Thrift CompactProtocol structure to find the byte
+   offset and length of each row group.
+3. **Row-group range GETs** — one independent byte-range GET per row group, issued
+   in parallel for `--rg-reads` randomly-selected distinct groups.
+
+This three-phase pattern is the reason that Parquet-aware object stores (such as
+[s3-ultra](https://github.com/russfellows/s3-ultra)) store the footer separately
+and can serve it from a fast metadata path — avoiding a round-trip to the object
+body entirely.
+
+---
+
+## Concurrency model
+
+Understanding the thread/I/O relationship is important for interpreting results.
+
+```
+Thread 0: picks img_19.parquet → launches 4 goroutines simultaneously
+           ├─ GET RG#47  (bytes 391 MB – 399 MB)  ──────────────────────┐
+           ├─ GET RG#12  (bytes 100 MB – 108 MB)  ─────────────┐        │
+           ├─ GET RG#83  (bytes 692 MB – 700 MB)  ──────┐      │        │
+           └─ GET RG#05  (bytes  42 MB –  50 MB)  ─┐    │      │        │
+                                                    │    │      │        │
+Thread 1: picks img_61.parquet → 4 more goroutines  │    │      │        │
+           ├─ GET RG#22  ...                        │    │      │        │  all 80
+           ├─ GET RG#71  ...                        │    │      │        │  in-flight
+           ├─ GET RG#03  ...                        │    │      │        │  simultaneously
+           └─ GET RG#99  ...                        │    │      │        │
+...                                                 │    │      │        │
+Thread 19: picks img_44.parquet → 4 more            │    │      │        │
+           ├─ GET ...                               │    │      │        │
+           └─ ...                                   ▼    ▼      ▼        ▼
+                                           all complete → thread picks next file
+```
+
+Key points:
+- With `--concurrent 20 --rg-reads 4`: up to **80 HTTP byte-range GETs** are
+  in-flight simultaneously (20 threads × 4 goroutines each).
+- Each thread **blocks** until all 4 of its GETs finish, then immediately picks a
+  new random file and fires the next batch of 4.
+- Real steady-state concurrency is ~50–55 (not the full 80), because the 4
+  goroutines don't all finish at identical times — there is a brief gap between the
+  last goroutine finishing and the next batch of 4 being dispatched.
+- Each row-group GET is a **separate HTTP request** recorded as its own `GET`
+  operation in the op-log, not coalesced. The trace exactly reflects what was sent
+  on the wire.
+
+**Verified behaviour** (64 × 1 GiB DLRM files, `--rg-reads 4`, `--concurrent 20`):
+- 308,124 individual GETs in 60 seconds
+- 100% of GETs for exactly 1 row group (~8.3 MiB)
+- Peak concurrent GETs: 80 (theoretical max)
+- Modal concurrent GETs: 52
+
+---
+
+## Row-group selection modes
+
+### Default: random without replacement
+
+Each batch of `--rg-reads` row groups is selected using a partial Fisher-Yates
+shuffle — the same row group cannot appear twice in a single operation. This
+prevents false throughput inflation on servers with object-level caching (a
+repeated RG in the same op would likely hit the cache, not measure real I/O).
+
+### Sequential: `--rg-sequential`
+
+With `--rg-sequential`, the benchmark picks `--rg-reads` **consecutive** row
+groups starting at a random offset. This models the DLRM and similar file-major
+access patterns, where a training epoch reads each file front-to-back:
+
+```bash
+./warp parquet --rg-sequential --rg-reads 4 ...
+```
+
+---
+
+## Op-log operation types
+
+When running with `--full`, the per-operation `.csv.zst` log contains three
+distinct operation types:
+
+| `op` column | Phase | Count (typical) |
+|-------------|-------|-----------------|
+| `LIST` | Prepare — initial bucket listing | 1 |
+| `GET-FOOTER` | Prepare — per-file footer byte-range GET | N files (or 2N on footer-size retry) |
+| `GET` | Benchmark loop — individual row-group byte-range GETs | many |
+
+The `GET-FOOTER` count is 2× the file count when `--footer-size` is smaller than
+the actual Parquet footer: the code records the failed first attempt **and** the
+successful retry with the correct size, giving an accurate picture of the
+prepare-phase I/O cost.
+
+### Inspecting the op-log
+
+```bash
+# Count op types
+zstdcat warp-parquet-*.csv.zst | awk -F'\t' 'NR>1{print $3}' | sort | uniq -c
+
+# GET byte-size histogram (verify one RG per GET)
+zstdcat warp-parquet-*.csv.zst \
+  | awk -F'\t' '$3=="GET" && $6>0{print $6}' \
+  | awk '{mb=int($1/1048576+0.5)} {hist[mb]++} END{for(k in hist) print k"MiB", hist[k]}' \
+  | sort -n
+
+# Show all non-GET ops (LIST + footer GETs)
+zstdcat warp-parquet-*.csv.zst | awk -F'\t' 'NR==1 || $3!="GET"' | head -80
+```
+
+---
+
+## Quick start
+
+```bash
+# Build warp (if not already done)
+cd /path/to/warp-replay
+make
+
+# Basic Parquet benchmark against MinIO or s3-ultra on localhost:9000
+./warp parquet \
+  --host localhost:9000 \
+  --access-key minioadmin \
+  --secret-key minioadmin \
+  --bucket parquet-bench \
+  --objects 50 \
+  --obj.size 128MiB \
+  --row-groups 10 \
+  --rg-size 8MiB \
+  --footer-size 128KiB \
+  --rg-reads 2 \
+  --concurrent 8 \
+  --duration 60s
+```
+
+---
+
+## Flags
+
+### Parquet-specific flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--objects` | 100 | Number of Parquet objects to upload during the prepare phase. |
+| `--obj.size` | 128MiB | Total size of each Parquet object. |
+| `--row-groups` | 10 | Number of row groups per object. |
+| `--rg-size` | 8MiB | Byte size of each row group. |
+| `--footer-size` | 128KiB | Bytes to fetch for the footer range GET. Must be ≥ actual footer size; the code retries with the exact size if the first fetch is too small. |
+| `--rg-reads` | 2 | Number of parallel row-group byte-range GETs per benchmark operation. Each fires as an independent goroutine and is recorded as a separate `GET` op in the trace. |
+| `--rg-sequential` | false | Read `--rg-reads` consecutive row groups starting at a random offset instead of random-without-replacement. Models DLRM-style sequential access. |
+| `--list-existing` | false | Skip upload. LIST the bucket, fetch and cache all footers once, then benchmark using those objects. |
+| `--prefix` | (random) | Object key prefix when listing existing objects. |
+
+### Standard benchmark flags (inherited)
+
+| Flag | Description |
+|------|-------------|
+| `--host` | S3 endpoint(s), comma-separated or expandable (`node{1..8}:9000`) |
+| `--access-key` / `--secret-key` | S3 credentials |
+| `--bucket` | Bucket name |
+| `--concurrent` | Number of concurrent benchmark goroutines (default: 20) |
+| `--duration` | Benchmark duration (default: 5m) |
+| `--tls` | Use TLS (default: false) |
+| `--full` | Write a streaming per-operation `.csv.zst` log to disk |
+| `--keep-data` | Do not delete objects after the benchmark |
+
+---
+
+## How the benchmark works
+
+### Prepare phase (`--list-existing`)
+
+When using real existing data (the normal production mode):
+
+1. **LIST** the bucket (recorded as a single `LIST` op in the trace).
+2. For each file, issue a footer byte-range GET (`GET bytes=<last footerSize>`).
+   - If the footer is larger than `--footer-size`, the code retries with the exact
+     size extracted from the Thrift metadata length field. Both attempts are
+     recorded as `GET-FOOTER` ops.
+3. Cache the parsed row-group layout (offset + size for every group) in memory.
+   Footer GETs are never repeated during the benchmark loop.
+
+### Prepare phase (synthetic upload)
+
+When no existing data is available:
+
+1. Generate structurally valid Parquet objects using the hand-rolled Thrift
+   CompactProtocol encoder in `pkg/bench/parquet_footer.go`.
+2. Upload concurrently using a worker pool.
+3. Row-group offsets are stored from the generated layout — no footer GET needed.
+
+### Benchmark loop
+
+Each goroutine, on every iteration until `--duration` expires:
+
+1. **Pick a random object** from the corpus.
+2. **Select row groups** (footer already cached — no footer GET issued):
+   - Default: `--rg-reads` distinct random groups via Fisher-Yates partial shuffle.
+   - `--rg-sequential`: `--rg-reads` consecutive groups from a random start index.
+3. **Launch goroutines**: one per selected row group, each issuing an independent
+   byte-range GET and recording its own `GET` operation in the trace.
+4. **Wait** for all goroutines to finish, then loop.
+
+---
+
+## Testing against s3-ultra with real DLRM data
+
+```bash
+# Use the convenience script in scripts/
+bash scripts/run_parquet_bench.sh 1m0s
+
+# With sequential (DLRM-style) row-group access
+bash scripts/run_parquet_bench.sh 1m0s --rg-sequential
+```
+
+See [scripts/run_parquet_bench.sh](../scripts/run_parquet_bench.sh) for the full
+invocation with all flags documented.
+
+### What to look for
+
+| Metric | What it tells you |
+|--------|------------------|
+| **MiB/s** | Total bytes transferred (footer bytes during prepare + all row-group bytes during benchmark) |
+| **TTFB** | Time from request start to first byte received. Near-zero on s3-ultra means the footer metadata path is working. |
+| **p99 latency** | Tail latency — important for interactive workloads |
+| **Errors** | Non-zero error count means footer parse failed or a range GET returned bad data |
+| **GET-FOOTER count = 2N** | `--footer-size` is too small for your files; increase it to avoid the retry |
+
+---
+
+## Implementation details
+
+### Thrift encoder/decoder (`pkg/bench/parquet_footer.go`)
+
+Uses Thrift CompactProtocol with no external dependencies (Go standard library
+only). Ported from [gcsfuse-bench](https://github.com/russfellows/gcsfuse-bench)
+with Apache 2.0 attribution.
+
+### Object layout (synthetic)
+
+```
+offset 0                 : PAR1  (4 bytes)
+offset 4                 : Row Group 0  (rgSize bytes)
+offset 4 + 1×rgSize      : Row Group 1
+…
+offset 4 + (N-1)×rgSize  : Row Group N-1
+offset 4 + N×rgSize      : FileMetaData (Thrift, variable length)
+offset 4 + N×rgSize + M  : footer_length  (4-byte LE uint32, value = M)
+offset 4 + N×rgSize + M+4: PAR1  (4 bytes)
+```
+
+---
+
+## Compared to other approaches
+
+| Approach | What it tests | Per-RG granularity? | Footer correctness? |
+|----------|--------------|---------------------|---------------------|
+| `warp get` | Full-object throughput | No | No |
+| `warp mixed` | Combined PUT/GET/DELETE | No | No |
+| `warp parquet` | Footer range GET + parallel row-group GETs | **Yes** | **Yes** |
+
+`warp parquet` is the only approach that:
+- Issues real byte-range GETs at actual row-group offsets
+- Records each HTTP request individually in the trace
+- Can distinguish a server serving real Parquet footers from one returning random bytes
+
 
 ---
 

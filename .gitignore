@@ -18,12 +18,14 @@ dist
 # zst files
 *.zst
 
+# Locally generated Excel files, likely from polarwarp analysis
+*.xlsx
+
 # qreleaser state file
 .release-state.sh
 
 # local secrets — never commit
 .env
-warp-test
 
 # Python tooling (uv/pyenv artifacts — local environment only, not part of the Go project)
 .python-version

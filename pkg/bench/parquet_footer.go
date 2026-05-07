@@ -271,7 +271,8 @@ func BuildParquetObject(rng *rand.Rand, objectSize int64, rgCount int, rgSize in
 	if needed > objectSize {
 		return nil, nil, fmt.Errorf(
 			"object too small: need %d bytes for %d×%d-byte row groups + %d-byte metadata, have %d",
-			needed, rgCount, rgSize, len(meta), objectSize)
+			needed, rgCount, rgSize, len(meta), objectSize,
+		)
 	}
 
 	// footerTail = [meta][4-byte LE metaLen][PAR1]
@@ -336,7 +337,7 @@ func readVarint(data []byte, pos int) (uint64, int, bool) {
 func zigzagI64(v uint64) int64 { return int64((v >> 1) ^ -(v & 1)) }
 func zigzagI32(v uint64) int32 { return int32((v >> 1) ^ -(v & 1)) }
 
-func readFieldHeader(data []byte, pos, prevFieldID int) (fieldID int, typ byte, newPos int, isStop bool, ok bool) {
+func readFieldHeader(data []byte, pos, prevFieldID int) (fieldID int, typ byte, newPos int, isStop, ok bool) {
 	if pos >= len(data) {
 		return 0, 0, pos, false, false
 	}
@@ -609,15 +610,31 @@ func decodeColumnChunkList(data []byte, pos int) (ParquetRowGroup, int, error) {
 		size = int(b >> 4)
 	}
 
+	// A real Parquet row group spans ALL column chunks, not just the first.
+	// Track the union of [Offset, Offset+Size) across every column chunk so
+	// that a single byte-range GET covers the entire row group, matching
+	// the behavior of real AI/ML data loaders (e.g. PyArrow, TensorStore).
+	minOffset := int64(-1)
+	maxEnd := int64(0)
+
 	for i := 0; i < size; i++ {
 		chunk, newPos, err := decodeColumnChunk(data, pos)
 		if err != nil {
 			return rg, newPos, fmt.Errorf("column_chunk[%d]: %w", i, err)
 		}
 		pos = newPos
-		if i == 0 {
-			rg = chunk
+		end := chunk.Offset + chunk.Size
+		if minOffset < 0 || chunk.Offset < minOffset {
+			minOffset = chunk.Offset
 		}
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+
+	if minOffset >= 0 {
+		rg.Offset = minOffset
+		rg.Size = maxEnd - minOffset
 	}
 	return rg, pos, nil
 }
@@ -733,7 +750,8 @@ func ParseParquetFooter(footerBytes []byte, objectSize int64) ([]ParquetRowGroup
 		return nil, fmt.Errorf(
 			"metadata length %d exceeds available footer buffer (%d bytes before length field); "+
 				"increase --footer-size to at least %d bytes",
-			metaLen, n-8, metaLen+8)
+			metaLen, n-8, metaLen+8,
+		)
 	}
 
 	thriftStart := n - 8 - metaLen

@@ -11,8 +11,10 @@ tool. It adds several capabilities on top of upstream warp:
    streams directly to disk and uses only a few MB of RAM regardless of run duration or
    concurrency level**.
 3. **Parquet benchmark** (`warp parquet`) — first Parquet-native benchmark in any warp variant;
-   exercises the three-phase AI/ML access pattern: footer range GET → Thrift decode → parallel
-   row-group byte-range GETs.
+   exercises the three-phase AI/ML access pattern: one-time footer range GET + cache → parallel
+   row-group byte-range GETs (one HTTP request per row group, each recorded individually in the
+   op-log). Supports random-without-replacement and sequential (`--rg-sequential`) RG selection.
+   See [docs/README_PARQUET.md](docs/README_PARQUET.md).
 4. **h2c transport** (`--h2c`) — HTTP/2 cleartext (prior-knowledge) for servers that speak h2c
    natively (e.g. s3-ultra), with a multi-connection pool and configurable stream window sizes.
 
@@ -23,10 +25,11 @@ tool. It adds several capabilities on top of upstream warp:
 | Document | Description |
 |----------|-------------|
 | [docs/README-Upstream.md](docs/README-Upstream.md) | Full upstream warp documentation (benchmarks, configuration, analysis, distributed mode, InfluxDB, …) |
-| [docs/README_PARQUET.md](docs/README_PARQUET.md) | Parquet benchmark (`warp parquet`) — three-phase AI/ML Parquet I/O: footer range GET, Thrift decode, parallel row-group GETs |
+| [docs/README_PARQUET.md](docs/README_PARQUET.md) | Parquet benchmark (`warp parquet`) — concurrency model, op-log trace format, row-group selection modes, DLRM test results |
 | [docs/README_H2C.md](docs/README_H2C.md) | h2c transport (`--h2c`) — HTTP/2 cleartext with multi-connection pool and stream window tuning |
 | [docs/README_ICEBERG.md](docs/README_ICEBERG.md) | Iceberg REST catalog benchmarks (`iceberg catalog-read`, `catalog-commits`, `catalog-mixed`, `sustained`) |
 | [docs/Warp-streaming-log-Design.md](docs/Warp-streaming-log-Design.md) | Design notes for the streaming log writer |
+| [scripts/](scripts/) | Convenience run scripts for common benchmark configurations |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and version notes |
 
 ---
