@@ -97,7 +97,7 @@ func (p *h2cPool) RoundTrip(req *http.Request) (*http.Response, error) {
 // true socket-level parallelism: M connections × S streams each ≈ --concurrent.
 //
 // --h2c-conns 0 = auto: ceil(concurrent / 32) connections
-// --h2c-conns 1 = single connection (original behaviour, all streams share one TCP conn)
+// --h2c-conns 1 = single connection (original behavior, all streams share one TCP conn)
 // --h2c-conns N = exactly N parallel h2c TCP connections
 func newH2CTransport(ctx *cli.Context, localIP string) http.RoundTripper {
 	explicitConns := ctx.Int("h2c-conns")

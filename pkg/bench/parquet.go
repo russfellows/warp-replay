@@ -27,17 +27,16 @@
 //  2. Benchmark loop (per goroutine):
 //     a. Footer read  — byte-range GET of the last --footer-size bytes.
 //     b. Footer parse — decode the Thrift FileMetaData to extract real row-group
-//        offsets (verifies the server returned the real footer, not synthesised bytes).
+//     offsets (verifies the server returned the real footer, not synthesized bytes).
 //     c. Row-group GETs — --rg-reads parallel byte-range GETs, each hitting one
-//        randomly chosen row group at its actual byte offset.
+//     randomly chosen row group at its actual byte offset.
 //
 // When run against s3-ultra this validates:
 //   - That s3-ultra correctly captured the Parquet footer on PUT.
 //   - That range GETs of the footer region return real footer bytes (not
-//     synthesised random data).
+//     synthesized random data).
 //   - That row-group range GETs work and return the correct byte count.
 //   - Full throughput characteristics of the server under Parquet workloads.
-
 package bench
 
 import (
@@ -94,7 +93,7 @@ func (p *Parquet) Prepare(ctx context.Context) error {
 // prepareFromExisting lists objects already in the bucket, then concurrently
 // fetches and caches the Parquet footer for every object.  Caching footers
 // once at startup — rather than re-fetching on every benchmark iteration —
-// matches the behaviour of real AI/ML data loaders (e.g. PyArrow, TensorStore,
+// matches the behavior of real AI/ML data loaders (e.g. PyArrow, TensorStore,
 // mosaic-streaming) which parse metadata once and reuse it across epochs.
 //
 // Both the LIST operation and each footer GET are recorded to the Collector so
@@ -428,7 +427,7 @@ func (p *Parquet) Cleanup(ctx context.Context) {
 
 // Start executes the Parquet GET benchmark.
 //
-// Each goroutine loops until ctx is cancelled.  One iteration consists of:
+// Each goroutine loops until ctx is canceled.  One iteration consists of:
 //  1. Footer read  — range GET of the last FooterSize bytes.
 //  2. Footer parse — Thrift decode to extract real row-group byte offsets.
 //  3. Row-group GETs — RGReads parallel range GETs at the row-group offsets
@@ -446,7 +445,7 @@ func (p *Parquet) Start(ctx context.Context, wait chan struct{}) error {
 		ctx = c.AutoTerm(ctx, "GET", p.AutoTermScale, autoTermCheck, autoTermSamples, p.AutoTermDur)
 	}
 
-	// Non-cancellable context for operations in flight when ctx is cancelled;
+	// Non-cancellable context for operations in flight when ctx is canceled;
 	// we use ctx directly for all S3 calls so cancellation drains gracefully.
 	for i := 0; i < p.Concurrency; i++ {
 		go func(threadIdx int) {
@@ -488,7 +487,7 @@ func (p *Parquet) Start(ctx context.Context, wait chan struct{}) error {
 //
 // When the object's row-group layout was pre-fetched during Prepare (the normal
 // path for --list-existing), the footer GET is skipped entirely and we go
-// straight to Phase 3 row-group GETs.  This matches the behaviour of real
+// straight to Phase 3 row-group GETs.  This matches the behavior of real
 // AI/ML data loaders that cache Parquet metadata and only issue row-group reads
 // during training.
 //
@@ -507,7 +506,6 @@ func (p *Parquet) doParquetGet(
 	rcv chan<- Operation,
 	threadIdx uint32,
 ) error {
-
 	groups := entry.Groups // may be nil if footer was not pre-cached
 	objSize := entry.Size
 
@@ -665,7 +663,7 @@ func (p *Parquet) doParquetGet(
 
 	for j := 0; j < actualReads; j++ {
 		r := ranges[j]
-		var rgStart, rgEnd int64 = r.start, r.end
+		rgStart, rgEnd := r.start, r.end
 
 		go func(start, end int64) {
 			op := Operation{

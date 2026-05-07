@@ -271,7 +271,8 @@ func BuildParquetObject(rng *rand.Rand, objectSize int64, rgCount int, rgSize in
 	if needed > objectSize {
 		return nil, nil, fmt.Errorf(
 			"object too small: need %d bytes for %d×%d-byte row groups + %d-byte metadata, have %d",
-			needed, rgCount, rgSize, len(meta), objectSize)
+			needed, rgCount, rgSize, len(meta), objectSize,
+		)
 	}
 
 	// footerTail = [meta][4-byte LE metaLen][PAR1]
@@ -749,7 +750,8 @@ func ParseParquetFooter(footerBytes []byte, objectSize int64) ([]ParquetRowGroup
 		return nil, fmt.Errorf(
 			"metadata length %d exceeds available footer buffer (%d bytes before length field); "+
 				"increase --footer-size to at least %d bytes",
-			metaLen, n-8, metaLen+8)
+			metaLen, n-8, metaLen+8,
+		)
 	}
 
 	thriftStart := n - 8 - metaLen

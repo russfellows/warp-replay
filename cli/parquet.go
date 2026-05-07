@@ -95,13 +95,13 @@ DESCRIPTION:
     1. Footer read  — byte-range GET of the last --footer-size bytes.
     2. Footer parse — decode the Thrift FileMetaData to extract row-group
        offsets.  This verifies the server returned the real footer bytes (not
-       synthesised random data), which is the key correctness check for
+       synthesized random data), which is the key correctness check for
        s3-ultra's Parquet footer storage feature.
     3. Row-group GETs — --rg-reads parallel byte-range GETs.  By default, row
        groups are selected randomly *without replacement* so each read in a
        single operation hits a distinct row group.  With --rg-sequential, warp
        picks --rg-reads *consecutive* row groups starting at a random offset,
-       modelling the DLRM/file-major sequential access pattern.
+       modeling the DLRM/file-major sequential access pattern.
 
   Metrics
     Each benchmark op records the total byte count (footer + all row groups)
