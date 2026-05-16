@@ -39,8 +39,10 @@ func LiveCollector(ctx context.Context, updates chan UpdateReq, clientID string,
 	}
 	c.updates = updates
 	rcv := c.rcv
+	c.wg.Add(1)
 	go func() {
 		final := Live(rcv, updates, clientID, extra)
+		c.wg.Done() // Live() is done; extra channels have been closed
 		for {
 			select {
 			case <-ctx.Done():
@@ -70,6 +72,7 @@ type collector struct {
 	rcv     chan bench.Operation
 	updates chan<- UpdateReq
 	doneFn  []context.CancelFunc
+	wg      sync.WaitGroup // signals when Live() has finished and extra channels are closed
 }
 
 func (c *collector) AutoTerm(ctx context.Context, op string, threshold float64, wantSamples, _ int, minDur time.Duration) context.Context {
@@ -159,13 +162,15 @@ func (c *collector) Receiver() chan<- bench.Operation {
 
 func (c *collector) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.rcv != nil {
 		close(c.rcv)
 		c.rcv = nil
 	}
-	for _, cancel := range c.doneFn {
+	fns := c.doneFn
+	c.doneFn = nil
+	c.mu.Unlock()
+	for _, cancel := range fns {
 		cancel()
 	}
-	c.doneFn = nil
+	c.wg.Wait() // wait for Live() to finish and all extra channels to be closed
 }

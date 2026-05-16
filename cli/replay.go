@@ -54,7 +54,7 @@ var replayCmd = cli.Command{
 	Flags: []cli.Flag{
 		cli.StringFlag{
 			Name:  "file",
-			Usage: "Path to the WARP output file (.csv or .csv.zst) to replay (required)",
+			Usage: "Path to the WARP output file (.tsv or .trace.tsv.zst) to replay (required)",
 		},
 		cli.StringFlag{
 			Name:  "config",
@@ -191,7 +191,7 @@ func mainReplay(c *cli.Context) error {
 		csvCloser func()
 	)
 	if logWarpOps {
-		outName := fmt.Sprintf("warp-replay-ops-%s.csv.zst", time.Now().Format("20060102-150405"))
+		outName := fmt.Sprintf("warp-replay-ops-%s.trace.tsv.zst", time.Now().Format("20060102-150405"))
 		outFH, err := os.Create(outName)
 		if err != nil {
 			return cli.NewExitError(fmt.Sprintf("cannot create ops log: %v", err), 1)

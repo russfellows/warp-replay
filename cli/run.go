@@ -47,7 +47,7 @@ var runCmd = cli.Command{
 		},
 		cli.BoolFlag{
 			Name:  "full",
-			Usage: "Write a full per-operation log to <benchdata>.csv.zst in addition to the normal benchmark data.",
+			Usage: "Write a full per-operation log to <benchdata>.trace.tsv.zst in addition to the normal benchmark data.",
 		},
 	},
 	CustomHelpTemplate: `NAME:

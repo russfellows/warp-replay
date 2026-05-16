@@ -29,9 +29,9 @@ import (
 // helpers
 // ---------------------------------------------------------------------------
 
-// openCSVZst opens a .csv.zst file and returns its decoded Operations.
+// openTSVZst opens a .trace.tsv.zst file and returns its decoded Operations.
 // Registered as a test helper so failures show the caller's file/line.
-func openCSVZst(t *testing.T, path string) Operations {
+func openTSVZst(t *testing.T, path string) Operations {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
@@ -71,7 +71,7 @@ func makeOp(thread uint32, size int64) Operation {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_FileCreatedOnNew(t *testing.T) {
-	path := t.TempDir() + "/test.csv.zst"
+	path := t.TempDir() + "/test.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "c1", "warp test")
 	if err != nil {
@@ -90,7 +90,7 @@ func TestStreamingWriter_FileCreatedOnNew(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_OpCount(t *testing.T) {
-	path := t.TempDir() + "/ops.csv.zst"
+	path := t.TempDir() + "/ops.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "c1", "")
 	if err != nil {
@@ -105,7 +105,7 @@ func TestStreamingWriter_OpCount(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	got := openCSVZst(t, path)
+	got := openTSVZst(t, path)
 	if len(got) != numOps {
 		t.Errorf("expected %d ops, got %d", numOps, len(got))
 	}
@@ -116,7 +116,7 @@ func TestStreamingWriter_OpCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_ClientIDStamped(t *testing.T) {
-	path := t.TempDir() + "/cid.csv.zst"
+	path := t.TempDir() + "/cid.trace.tsv.zst"
 	const wantID = "XYZW"
 
 	w, err := NewStreamingOpsWriter(path, wantID, "")
@@ -129,7 +129,7 @@ func TestStreamingWriter_ClientIDStamped(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
@@ -143,7 +143,7 @@ func TestStreamingWriter_ClientIDStamped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_EmptyClientID_PreservesField(t *testing.T) {
-	path := t.TempDir() + "/nocid.csv.zst"
+	path := t.TempDir() + "/nocid.trace.tsv.zst"
 
 	// Pass empty clientID — writer must not overwrite op.ClientID.
 	w, err := NewStreamingOpsWriter(path, "", "")
@@ -159,7 +159,7 @@ func TestStreamingWriter_EmptyClientID_PreservesField(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
@@ -173,7 +173,7 @@ func TestStreamingWriter_EmptyClientID_PreservesField(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_EmptyRun(t *testing.T) {
-	path := t.TempDir() + "/empty.csv.zst"
+	path := t.TempDir() + "/empty.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "c1", "mycmd")
 	if err != nil {
@@ -183,7 +183,7 @@ func TestStreamingWriter_EmptyRun(t *testing.T) {
 		t.Fatalf("Close on empty writer: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != 0 {
 		t.Errorf("expected 0 ops from empty writer, got %d", len(ops))
 	}
@@ -194,7 +194,7 @@ func TestStreamingWriter_EmptyRun(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_ValuesPreserved(t *testing.T) {
-	path := t.TempDir() + "/vals.csv.zst"
+	path := t.TempDir() + "/vals.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "ID42", "")
 	if err != nil {
@@ -221,7 +221,7 @@ func TestStreamingWriter_ValuesPreserved(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
@@ -255,7 +255,7 @@ func TestStreamingWriter_ValuesPreserved(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWriter_MultipleOps_AllClientIDSet(t *testing.T) {
-	path := t.TempDir() + "/multi.csv.zst"
+	path := t.TempDir() + "/multi.trace.tsv.zst"
 	const wantID = "AAAA"
 
 	w, err := NewStreamingOpsWriter(path, wantID, "")
@@ -273,7 +273,7 @@ func TestStreamingWriter_MultipleOps_AllClientIDSet(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != n {
 		t.Fatalf("expected %d ops, got %d", n, len(ops))
 	}
@@ -294,7 +294,7 @@ func TestStreamingWriter_MultipleOps_AllClientIDSet(t *testing.T) {
 //  3. Call Wait() to drain.
 
 func TestStreamingWriter_Wait_CollectorPattern(t *testing.T) {
-	path := t.TempDir() + "/wait.csv.zst"
+	path := t.TempDir() + "/wait.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "cWait", "")
 	if err != nil {
@@ -316,7 +316,7 @@ func TestStreamingWriter_Wait_CollectorPattern(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if len(ops) != numOps {
 		t.Errorf("expected %d ops after Wait, got %d", numOps, len(ops))
 	}
@@ -335,7 +335,7 @@ func TestStreamingWriter_ConcurrentSends(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping concurrent test in short mode")
 	}
-	path := t.TempDir() + "/race.csv.zst"
+	path := t.TempDir() + "/race.trace.tsv.zst"
 
 	w, err := NewStreamingOpsWriter(path, "raceID", "")
 	if err != nil {
@@ -361,7 +361,7 @@ func TestStreamingWriter_ConcurrentSends(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	ops := openCSVZst(t, path)
+	ops := openTSVZst(t, path)
 	if want := goroutines * opsPerGoroutine; len(ops) != want {
 		t.Errorf("expected %d ops, got %d", want, len(ops))
 	}

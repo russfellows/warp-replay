@@ -149,7 +149,7 @@ func mainAnalyze(ctx *cli.Context) error {
 			} else {
 				if !globalQuiet && !globalJSON {
 					console.SetColor("Print", color.New(color.FgHiYellow))
-					console.Println("\nWARNING: Analyzing .csv.zst without --full produces aggregated results (1-second buckets), not accurate per-operation statistics.")
+					console.Println("\nWARNING: Analyzing .trace.tsv.zst without --full produces aggregated results (1-second buckets), not accurate per-operation statistics.")
 					console.Println("         For precise latency percentiles and throughput, use: warp analyze --full <file>")
 					console.SetColor("Print", color.New(color.FgWhite))
 				}
@@ -192,7 +192,7 @@ func mainAnalyze(ctx *cli.Context) error {
 			fatalIf(probe.NewError(err), "Unable to parse input")
 			console.Println("")
 			printAnalysis(ctx, os.Stdout, ops)
-			monitor.OperationsReady(ops, strings.TrimSuffix(filepath.Base(arg), ".csv.zst"), commandLine(ctx))
+			monitor.OperationsReady(ops, strings.TrimSuffix(filepath.Base(arg), ".trace.tsv.zst"), commandLine(ctx))
 		}
 	}
 	return nil

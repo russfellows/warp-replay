@@ -736,12 +736,13 @@ func (p *Parquet) doParquetGet(
 	for j := 0; j < actualReads; j++ {
 		select {
 		case <-ctx.Done():
-			// Drain remaining goroutines.
-			go func() {
-				for k := j; k < actualReads; k++ {
-					<-rgCh
-				}
-			}()
+			// Drain all remaining goroutines synchronously before returning.
+			// Each goroutine sends to rcv before signaling rgCh, so waiting
+			// here guarantees no goroutine will send to rcv after this function
+			// returns and the caller closes the collector.
+			for k := j; k < actualReads; k++ {
+				<-rgCh
+			}
 			return ctx.Err()
 		case r := <-rgCh:
 			if r.err != nil && firstErr == nil {

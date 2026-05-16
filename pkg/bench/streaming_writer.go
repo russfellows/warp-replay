@@ -50,7 +50,7 @@ type StreamingOpsWriter struct {
 // NewStreamingOpsWriter creates the output file immediately, writes the TSV
 // header, and starts a background goroutine to consume and write operations.
 //
-//   - path     – full path to the output .csv.zst file (created immediately)
+//   - path     – full path to the output .trace.tsv.zst file (created immediately)
 //   - clientID – stamped on every row's client_id column; leave empty to
 //     preserve any ClientID already set on arriving Operations
 //   - cmdLine  – written as a trailing "# …" comment after all ops are flushed

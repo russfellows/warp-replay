@@ -9,6 +9,34 @@ the second fork-specific release on that base.
 
 ---
 
+## v1.4.1-replay.4 — 2026-05-16
+
+**Summary files: plain TSV output; lint and format cleanup**
+
+### Change: summary files are now uncompressed `.summary.tsv`
+
+Previously `warp` wrote the per-run aggregate summary as a zstd-compressed
+`.summary.tsv.zst` file. Because summary files are small (one row per second of
+benchmark data), compression provides no meaningful space saving and adds an
+unwanted decompression step when loading files into spreadsheets or analysis tools
+such as polarWarp.
+
+Summary files are now written as plain `.summary.tsv` in both `benchmark.go`
+(three write paths) and `benchserver.go` (two write paths).
+
+The large per-operation trace files enabled by `--full` (`.trace.tsv.zst`) are
+unaffected — those remain zstd-compressed.
+
+### Fix: lint and format cleanup
+
+- Applied `gofumpt -extra` and corrected `misspell` findings in
+  `cli/client_transport.go`, `cli/parquet.go`, `pkg/bench/parquet.go`, and
+  `pkg/bench/parquet_footer.go`.
+- Resolved `revive` and `staticcheck` warnings that blocked CI.
+- `go mod tidy`: promoted `golang.org/x/net` to a direct dependency.
+
+---
+
 ## v1.4.1-replay.3 — 2026-05-07
 
 **Parquet benchmark: per-request op-log accuracy, op-log tracing for prepare phase,
@@ -233,6 +261,7 @@ upstream warp on the PATH.
 
 | warp-replay version | Upstream warp base |
 |---------------------|-----------------|
+| v1.4.1-replay.4 | v1.4.1 |
 | v1.4.1-replay.3 | v1.4.1 |
 | v1.4.1-replay.1 | v1.4.1 |
 | v1.4.0-replay.1 | v1.4.0 |

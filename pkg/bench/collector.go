@@ -54,6 +54,7 @@ type collector struct {
 	// The mutex protects the ops above.
 	// Once ops have been added, they should no longer be modified.
 	opsMu sync.Mutex
+	once  sync.Once
 }
 
 // NewOpsCollector returns a collector that will collect all operations in memory.
@@ -182,13 +183,11 @@ func (c *collector) Receiver() chan<- Operation {
 }
 
 func (c *collector) Close() {
-	if c.rcv != nil {
+	c.once.Do(func() {
 		close(c.rcv)
 		c.rcvWg.Wait()
-		c.rcv = nil
 		for _, ch := range c.extra {
 			close(ch)
 		}
-		c.extra = nil
-	}
+	})
 }

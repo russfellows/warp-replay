@@ -141,13 +141,13 @@ func runBench(ctx *cli.Context, b bench.Benchmark) error {
 		fileName = fmt.Sprintf("%s-%s-%s-%s", appName, ctx.Command.Name, time.Now().Format("2006-01-02[150405]"), cID)
 	}
 
-	// When --full is set, create the streaming csv.zst writer immediately.
+	// When --full is set, create the streaming trace writer immediately.
 	// The file exists on disk from this point so a partial record is available
 	// even if the benchmark is interrupted before it finishes.
 	var csvWriter *bench.StreamingOpsWriter
 	if ctx.Bool("full") {
 		var werr error
-		csvWriter, werr = bench.NewStreamingOpsWriter(fileName+".csv.zst", cID, commandLine(ctx))
+		csvWriter, werr = bench.NewStreamingOpsWriter(fileName+".trace.tsv.zst", cID, commandLine(ctx))
 		fatalIf(probe.NewError(werr), "Unable to create benchmark data file")
 	}
 
@@ -255,11 +255,9 @@ func runBench(ctx *cli.Context, b bench.Benchmark) error {
 		if werr := csvWriter.Wait(); werr != nil {
 			monitor.Errorln("Error finalizing benchmark data:", werr)
 		} else {
-			monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n", fileName+".csv.zst"))
+			monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n", fileName+".trace.tsv.zst"))
 		}
 	}
-
-	// Previous context is canceled, create a new...
 	monitor.InfoLn("Saving benchmark data")
 	if ops := retrieveOps(); len(ops) > 0 {
 		ops.SortByStartTime()
@@ -283,7 +281,7 @@ func runBench(ctx *cli.Context, b bench.Benchmark) error {
 				}()
 			}
 		}
-		// --full is additive: also write the json.zst aggregate alongside csv.zst.
+		// --full is additive: also write the summary.tsv aggregate alongside trace.tsv.zst.
 		if updates != nil {
 			finalCh := make(chan *aggregate.Realtime, 1)
 			updates <- aggregate.UpdateReq{Final: true, C: finalCh}
@@ -292,24 +290,16 @@ func runBench(ctx *cli.Context, b bench.Benchmark) error {
 			final.WarpVersion = GlobalVersion
 			final.WarpDate = GlobalDate
 			final.WarpCommit = GlobalCommit
-			f, err := os.Create(fileName + ".json.zst")
+			f, err := os.Create(fileName + ".summary.tsv")
 			if err != nil {
 				monitor.Errorln("Unable to write benchmark data:", err)
 			} else {
 				func() {
 					defer f.Close()
-					enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-					if err != nil {
-						monitor.Errorln("Unable to compress benchmark data:", err)
-					}
-					defer enc.Close()
-					js := json.NewEncoder(enc)
-					js.SetIndent("", "  ")
-					err = js.Encode(final)
-					if err != nil {
+					if err = final.WriteTSV(f, commandLine(ctx)); err != nil {
 						monitor.Errorln("Unable to write benchmark data:", err)
 					}
-					monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".json.zst"))
+					monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".summary.tsv"))
 				}()
 			}
 		}
@@ -327,26 +317,16 @@ func runBench(ctx *cli.Context, b bench.Benchmark) error {
 		final.WarpVersion = GlobalVersion
 		final.WarpDate = GlobalDate
 		final.WarpCommit = GlobalCommit
-		f, err := os.Create(fileName + ".json.zst")
+		f, err := os.Create(fileName + ".summary.tsv")
 		if err != nil {
 			monitor.Errorln("Unable to write benchmark data:", err)
 		} else {
 			func() {
 				defer f.Close()
-				enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-				if err != nil {
-					monitor.Errorln("Unable to compress benchmark data:", err)
-				}
-
-				defer enc.Close()
-				js := json.NewEncoder(enc)
-				js.SetIndent("", "  ")
-				err = js.Encode(final)
-				if err != nil {
+				if err = final.WriteTSV(f, commandLine(ctx)); err != nil {
 					monitor.Errorln("Unable to write benchmark data:", err)
 				}
-
-				monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".json.zst"))
+				monitor.InfoLn(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".summary.tsv"))
 			}()
 		}
 		var rep *bytes.Buffer
@@ -497,11 +477,33 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 		return err
 	}
 
-	retrieveOps, updates := addCollector(ctx, b)
 	common := b.GetCommon()
 	common.UpdateStatus = func(s string) {
 		console.Infoln(s)
 	}
+
+	// Determine file name and client ID before wiring the collector so the
+	// streaming writer (if --full) can be created before benchmarking starts.
+	fileName := ctx.String("benchdata")
+	cID := pRandASCII(6)
+	if fileName == "" {
+		fileName = fmt.Sprintf("%s-%s-%s-%s", appName, ctx.Command.Name, time.Now().Format("2006-01-02[150405]"), cID)
+	}
+
+	var csvWriter *bench.StreamingOpsWriter
+	if ctx.Bool("full") {
+		var werr error
+		csvWriter, werr = bench.NewStreamingOpsWriter(fileName+".trace.tsv.zst", cID, commandLine(ctx))
+		if werr != nil {
+			return fmt.Errorf("unable to create benchmark data file: %w", werr)
+		}
+	}
+
+	var fullExtra []chan<- bench.Operation
+	if csvWriter != nil {
+		fullExtra = []chan<- bench.Operation{csvWriter.Receiver()}
+	}
+	retrieveOps, updates := addCollector(ctx, b, fullExtra...)
 	defer common.Collector.Close()
 
 	cb.Lock()
@@ -543,12 +545,6 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 		cancel()
 	}()
 
-	fileName := ctx.String("benchdata")
-	cID := pRandASCII(6)
-	if fileName == "" {
-		fileName = fmt.Sprintf("%s-%s-%s-%s", appName, ctx.Command.Name, time.Now().Format("2006-01-02[150405]"), cID)
-	}
-
 	err = b.Start(ctx2, start)
 	ops := retrieveOps()
 	cb.Lock()
@@ -558,28 +554,20 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 	if err != nil {
 		return err
 	}
-	ops.SetClientID(cID)
-	ops.SortByStartTime()
+	// Close collector — this also closes the streaming writer's channel if present.
 	common.Collector.Close()
 
-	if len(ops) > 0 {
-		f, err := os.Create(fileName + ".csv.zst")
-		if err != nil {
-			console.Error("Unable to write benchmark data:", err)
+	// Flush streaming writer to disk.
+	if csvWriter != nil {
+		if werr := csvWriter.Wait(); werr != nil {
+			console.Errorln("Error finalizing benchmark data:", werr)
 		} else {
-			func() {
-				defer f.Close()
-				enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-				fatalIf(probe.NewError(err), "Unable to compress benchmark output")
-
-				defer enc.Close()
-				err = ops.CSV(enc, commandLine(ctx))
-				fatalIf(probe.NewError(err), "Unable to write benchmark output")
-
-				console.Infof("Benchmark data written to %q\n", fileName+".csv.zst")
-			}()
+			console.Infof("Benchmark data written to %q\n", fileName+".trace.tsv.zst")
 		}
-	} else if updates != nil {
+	}
+
+	// Write aggregate summary as TSV.
+	if updates != nil {
 		finalCh := make(chan *aggregate.Realtime, 1)
 		updates <- aggregate.UpdateReq{Final: true, C: finalCh}
 		final := <-finalCh
@@ -587,25 +575,16 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 		final.WarpVersion = GlobalVersion
 		final.WarpDate = GlobalDate
 		final.WarpCommit = GlobalCommit
-		f, err := os.Create(fileName + ".json.zst")
+		f, err := os.Create(fileName + ".summary.tsv")
 		if err != nil {
 			console.Errorln("Unable to write benchmark data:", err)
 		} else {
 			func() {
 				defer f.Close()
-				enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-				if err != nil {
-					console.Errorln("Unable to compress benchmark data:", err)
-				}
-
-				defer enc.Close()
-				js := json.NewEncoder(enc)
-				js.SetIndent("", "  ")
-				err = js.Encode(final)
-				if err != nil {
+				if err = final.WriteTSV(f, commandLine(ctx)); err != nil {
 					console.Errorln("Unable to write benchmark data:", err)
 				}
-				console.Infoln(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".json.zst"))
+				console.Infoln(fmt.Sprintf("\nBenchmark data written to %q\n\n", fileName+".summary.tsv"))
 			}()
 		}
 	}
@@ -627,8 +606,7 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 //
 // The optional fullExtra channels are only meaningful when --full is set.
 // When fullExtra is non-empty, ops are streamed to those channels instead of
-// being accumulated in memory (streaming mode). When fullExtra is empty and
-// --full is set, ops are accumulated in memory for batch write (legacy mode).
+// being accumulated in memory (streaming mode).
 func addCollector(ctx *cli.Context, b bench.Benchmark, fullExtra ...chan<- bench.Operation) (bench.OpsCollector, chan<- aggregate.UpdateReq) {
 	common := b.GetCommon()
 	if common.DiscardOutput {
@@ -637,27 +615,16 @@ func addCollector(ctx *cli.Context, b bench.Benchmark, fullExtra ...chan<- bench
 	}
 	// Always create the live aggregating collector for real-time display and autoterm.
 	updates := make(chan aggregate.UpdateReq, 1000)
-	if ctx.Bool("full") {
-		// --full collects every individual operation for csv.zst output.
-		// Each op is also forwarded to the live collector so real-time display
-		// and autoterm continue to work normally.
+	if ctx.Bool("full") && len(fullExtra) > 0 {
+		// --full with streaming writer: fan out to live collector + streaming writer.
+		// Each op is forwarded to the live collector so real-time display and
+		// autoterm continue to work normally.
 		liveC := aggregate.LiveCollector(context.Background(), updates, pRandASCII(4), nil)
-		// Build the fan-out target list: common extras + live collector.
+		// Build the fan-out target list: common extras + live collector + streaming writer(s).
 		extras := append(append([]chan<- bench.Operation{}, common.ExtraOut...), liveC.Receiver())
-		if len(fullExtra) > 0 {
-			// Streaming mode: ops flow to the streaming writer channels; no
-			// in-memory accumulation.  Collector.Close() will close the
-			// streaming writer's channel; caller should call writer.Wait()
-			// afterwards.
-			extras = append(extras, fullExtra...)
-			common.Collector = bench.NewNullCollector(extras...)
-			return bench.EmptyOpsCollector, updates
-		}
-		// Batch fallback mode: accumulate ops in memory (used when no
-		// streaming writer is wired in, e.g. distributed agent path).
-		var retrieveOps bench.OpsCollector
-		common.Collector, retrieveOps = bench.NewOpsCollector(extras...)
-		return retrieveOps, updates
+		extras = append(extras, fullExtra...)
+		common.Collector = bench.NewNullCollector(extras...)
+		return bench.EmptyOpsCollector, updates
 	}
 	// Default: live aggregating collector only; no per-transaction file.
 	c := aggregate.LiveCollector(context.Background(), updates, pRandASCII(4), common.ExtraOut)

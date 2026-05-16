@@ -6,11 +6,11 @@ package cli
 //
 //  1. WITHOUT --full: the live aggregating collector is always active (updates ≠ nil,
 //     live display and autoterm work); per-transaction ops are NOT stored (retrieveOps
-//     returns empty), so no csv.zst is written.
+//     returns empty), so no trace.tsv.zst is written.
 //
-//  2. WITH --full:    the live aggregating collector is ALSO active (updates ≠ nil,
-//     live display and autoterm still work); per-transaction ops ARE stored
-//     (retrieveOps returns all sent ops), so csv.zst IS written. --full is additive.
+//  2. WITH --full + streaming writer: the live aggregating collector is ALSO active
+//     (updates ≠ nil, live display and autoterm still work); per-transaction ops ARE
+//     streamed to .trace.tsv.zst. --full is additive.
 //
 //  3. DiscardOutput=true: both retrieveOps and updates are nil/empty regardless of --full.
 
@@ -84,7 +84,7 @@ func requestFinal(t *testing.T, updates chan<- aggregate.UpdateReq) *aggregate.R
 
 // Without --full:
 //   - updates must be non-nil  (live display / autoterm work)
-//   - retrieveOps must return empty  (no per-transaction recording → no csv.zst)
+//   - retrieveOps must return empty  (no per-transaction recording → no trace.tsv.zst)
 func TestAddCollector_DefaultMode_NoOpsStored(t *testing.T) {
 	ctx := makeCtx(false)
 	b := &stubBench{}
@@ -108,12 +108,11 @@ func TestAddCollector_DefaultMode_NoOpsStored(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: --full mode — ops are stored for csv.zst
+// Test 2: --full mode without streaming writer — live-only, no in-memory ops
 // ---------------------------------------------------------------------------
 
-// With --full:
-//   - updates must be non-nil  (live display / autoterm still work)
-//   - retrieveOps must return all ops that were sent  (enables csv.zst write)
+// With --full but no streaming writer, addCollector falls through to the
+// live-only default path: updates is non-nil, retrieveOps returns 0 ops.
 func TestAddCollector_FullMode_OpsAreCollected(t *testing.T) {
 	ctx := makeCtx(true)
 	b := &stubBench{}
@@ -131,41 +130,32 @@ func TestAddCollector_FullMode_OpsAreCollected(t *testing.T) {
 	}
 	b.Collector.Close()
 
+	// No streaming writer → live-only, no in-memory accumulation.
 	ops := retrieveOps()
-	if len(ops) != numOps {
-		t.Errorf("expected %d ops from retrieveOps in --full mode, got %d", numOps, len(ops))
+	if len(ops) != 0 {
+		t.Errorf("live-only --full: expected 0 in-memory ops, got %d", len(ops))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: --full mode — live collector ALSO receives every op (additive)
+// Test 3: --full mode — live collector receives ops (live-only path)
 // ---------------------------------------------------------------------------
 
-// With --full the live collector is wired in via the extra-channel fan-out.
-// After closing the collector the live aggregate must reflect the ops that
-// were sent (TotalRequests > 0), proving the live path is active alongside
-// the per-transaction path.
+// With --full but no streaming writer, the live collector is the sole
+// collector. After closing, the live aggregate must reflect the sent ops.
 func TestAddCollector_FullMode_LiveCollectorAlsoReceivesOps(t *testing.T) {
 	ctx := makeCtx(true)
 	b := &stubBench{}
 
-	retrieveOps, updates := addCollector(ctx, b)
+	_, updates := addCollector(ctx, b)
 
 	const numOps = 3
 	for i := 0; i < numOps; i++ {
 		sendOp(t, b.Collector)
 	}
-	// Close flushes bench.OpsCollector and, via the extra channel, also
-	// signals the live collector to finish computing its aggregate.
 	b.Collector.Close()
 
-	// Sanity-check: per-transaction ops are present.
-	ops := retrieveOps()
-	if len(ops) != numOps {
-		t.Fatalf("expected %d ops, got %d", numOps, len(ops))
-	}
-
-	// Live collector must also have received the ops.
+	// Live collector must have received the ops.
 	final := requestFinal(t, updates)
 	if final == nil {
 		t.Fatal("final aggregate is nil; live collector did not receive ops")
@@ -256,18 +246,24 @@ func TestAddCollector_DiscardOutput_NullCollector(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: --full is ADDITIVE — both file outputs can coexist in one run
+// Test 6: --full is ADDITIVE — both outputs work when streaming writer provided
 // ---------------------------------------------------------------------------
 
-// This test validates the core contract: --full must not disable any existing
-// behavior, only add the per-transaction csv.zst path on top.
-// We verify this by confirming both the ops slice AND the live aggregate are
-// non-empty after the same set of operations.
+// This test validates the core contract: when --full is set WITH a streaming
+// writer, ops flow to the file AND the live aggregate is also populated.
 func TestAddCollector_FullMode_IsAdditive(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/additive.trace.tsv.zst"
+
+	csvWriter, err := bench.NewStreamingOpsWriter(path, "testID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+
 	ctx := makeCtx(true)
 	b := &stubBench{}
 
-	retrieveOps, updates := addCollector(ctx, b)
+	retrieveOps, updates := addCollector(ctx, b, csvWriter.Receiver())
 
 	// Both must be non-nil immediately after addCollector returns.
 	if updates == nil {
@@ -280,11 +276,14 @@ func TestAddCollector_FullMode_IsAdditive(t *testing.T) {
 		sendOp(t, b.Collector)
 	}
 	b.Collector.Close()
+	if werr := csvWriter.Wait(); werr != nil {
+		t.Fatalf("csvWriter.Wait: %v", werr)
+	}
 
-	// Per-transaction store must be full.
+	// Streaming mode: no in-memory accumulation.
 	ops := retrieveOps()
-	if len(ops) != numOps {
-		t.Errorf("per-transaction store: expected %d ops, got %d", numOps, len(ops))
+	if len(ops) != 0 {
+		t.Errorf("expected 0 in-memory ops in streaming mode, got %d", len(ops))
 	}
 
 	// Live aggregate must also be non-empty (additive, not replacing).
@@ -298,18 +297,26 @@ func TestAddCollector_FullMode_IsAdditive(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: ops correctness — values are preserved through the collector
+// Test 7: ops correctness — values are preserved through the streaming writer
 // ---------------------------------------------------------------------------
 
-// With --full, the ops returned by retrieveOps must be the exact operations
-// that were sent — no data loss or corruption through the fan-out path.
+// With --full + streaming writer, the ops written to the file must be the
+// exact operations that were sent — no data loss through the fan-out path.
 func TestAddCollector_FullMode_OpValuesPreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/ops.trace.tsv.zst"
+
+	csvWriter, err := bench.NewStreamingOpsWriter(path, "valID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+
 	ctx := makeCtx(true)
 	b := &stubBench{}
 
-	retrieveOps, _ := addCollector(ctx, b)
+	_, _ = addCollector(ctx, b, csvWriter.Receiver())
 
-	now := time.Now().Truncate(time.Millisecond) // avoid sub-ms rounding
+	now := time.Now().Truncate(time.Millisecond)
 	op := bench.Operation{
 		OpType: "PUT",
 		Start:  now,
@@ -319,8 +326,25 @@ func TestAddCollector_FullMode_OpValuesPreserved(t *testing.T) {
 	}
 	b.Collector.Receiver() <- op
 	b.Collector.Close()
+	if werr := csvWriter.Wait(); werr != nil {
+		t.Fatalf("csvWriter.Wait: %v", werr)
+	}
 
-	ops := retrieveOps()
+	// Read back from file to verify value preservation.
+	f, ferr := os.Open(path)
+	if ferr != nil {
+		t.Fatalf("open %s: %v", path, ferr)
+	}
+	defer f.Close()
+	dec, derr := zstd.NewReader(f)
+	if derr != nil {
+		t.Fatalf("zstd.NewReader: %v", derr)
+	}
+	defer dec.Close()
+	ops, rerr := bench.OperationsFromCSV(dec, false, 0, 0, func(string, ...any) {})
+	if rerr != nil {
+		t.Fatalf("OperationsFromCSV: %v", rerr)
+	}
 	if len(ops) != 1 {
 		t.Fatalf("expected 1 op, got %d", len(ops))
 	}
@@ -427,19 +451,19 @@ func TestAddCollector_StreamingMode_LiveCollectorAlsoReceives(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: backward-compat — batch fallback when no streaming channel given
+// Test 10: full mode with no streaming channel falls through to live-only
 // ---------------------------------------------------------------------------
 
-// Passing no fullExtra channel with --full keeps the existing batch behavior:
-// retrieveOps returns all ops (needed for distributed agent path).
-func TestAddCollector_FullMode_BatchFallback_NoChannel(t *testing.T) {
+// Passing no fullExtra channel with --full falls through to live-only default.
+// retrieveOps always returns empty (no in-memory accumulation).
+func TestAddCollector_FullMode_NoChannel_LiveOnly(t *testing.T) {
 	ctx := makeCtx(true)
 	b := &stubBench{}
 
-	// No extra channel → existing batch mode.
+	// No extra channel → live-only (batch fallback removed).
 	retrieveOps, updates := addCollector(ctx, b)
 	if updates == nil {
-		t.Fatal("expected non-nil updates in batch fallback mode")
+		t.Fatal("expected non-nil updates channel")
 	}
 
 	const numOps = 4
@@ -448,21 +472,22 @@ func TestAddCollector_FullMode_BatchFallback_NoChannel(t *testing.T) {
 	}
 	b.Collector.Close()
 
+	// No in-memory accumulation in this path.
 	ops := retrieveOps()
-	if len(ops) != numOps {
-		t.Errorf("batch fallback: expected %d in-memory ops, got %d", numOps, len(ops))
+	if len(ops) != 0 {
+		t.Errorf("live-only: expected 0 in-memory ops, got %d", len(ops))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Test 11: end-to-end — streaming path writes correct csv.zst file
+// Test 11: end-to-end — streaming path writes correct trace.tsv.zst file
 // ---------------------------------------------------------------------------
 
 // Full pipeline: addCollector with a StreamingOpsWriter → send ops → close
 // collector (which closes writer channel) → wait writer → read back file.
 func TestAddCollector_Streaming_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	path := dir + "/out.csv.zst"
+	path := dir + "/out.trace.tsv.zst"
 	const wantClientID = "e2eID"
 
 	csvWriter, err := bench.NewStreamingOpsWriter(path, wantClientID, "")

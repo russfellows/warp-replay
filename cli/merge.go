@@ -163,7 +163,7 @@ func mergeCSV(ctx *cli.Context, args []string) error {
 	}
 	if len(allOps) > 0 {
 		allOps.SortByStartTime()
-		f, err := os.Create(fileName + ".csv.zst")
+		f, err := os.Create(fileName + ".trace.tsv.zst")
 		if err != nil {
 			console.Error("Unable to write benchmark data:", err)
 		} else {
@@ -176,7 +176,7 @@ func mergeCSV(ctx *cli.Context, args []string) error {
 				err = allOps.CSV(enc, commandLine(ctx))
 				fatalIf(probe.NewError(err), "Unable to write benchmark output")
 
-				console.Infof("Benchmark data written to %q\n", fileName+".csv.zst")
+				console.Infof("Benchmark data written to %q\n", fileName+".trace.tsv.zst")
 			}()
 		}
 	}
