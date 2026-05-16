@@ -1,7 +1,7 @@
 # warp-replay
 
 **warp-replay** is a fork of [MinIO warp](https://github.com/minio/warp), the S3 benchmarking
-tool. It adds two significant capabilities on top of upstream warp:
+tool. It adds several capabilities on top of upstream warp:
 
 1. **Workload replay** — replay any prior warp trace (`.csv.zst`) against a new target, or replay
    traces produced by other tools.
@@ -10,6 +10,13 @@ tool. It adds two significant capabilities on top of upstream warp:
    in-memory `--full` PR (where RAM usage grows with every operation recorded), **warp-replay
    streams directly to disk and uses only a few MB of RAM regardless of run duration or
    concurrency level**.
+3. **Parquet benchmark** (`warp parquet`) — first Parquet-native benchmark in any warp variant;
+   exercises the three-phase AI/ML access pattern: one-time footer range GET + cache → parallel
+   row-group byte-range GETs (one HTTP request per row group, each recorded individually in the
+   op-log). Supports random-without-replacement and sequential (`--rg-sequential`) RG selection.
+   See [docs/README_PARQUET.md](docs/README_PARQUET.md).
+4. **h2c transport** (`--h2c`) — HTTP/2 cleartext (prior-knowledge) for servers that speak h2c
+   natively (e.g. s3-ultra), with a multi-connection pool and configurable stream window sizes.
 
 ---
 
@@ -18,8 +25,12 @@ tool. It adds two significant capabilities on top of upstream warp:
 | Document | Description |
 |----------|-------------|
 | [docs/README-Upstream.md](docs/README-Upstream.md) | Full upstream warp documentation (benchmarks, configuration, analysis, distributed mode, InfluxDB, …) |
+| [docs/README_PARQUET.md](docs/README_PARQUET.md) | Parquet benchmark (`warp parquet`) — concurrency model, op-log trace format, row-group selection modes, DLRM test results |
+| [docs/README_H2C.md](docs/README_H2C.md) | h2c transport (`--h2c`) — HTTP/2 cleartext with multi-connection pool and stream window tuning |
 | [docs/README_ICEBERG.md](docs/README_ICEBERG.md) | Iceberg REST catalog benchmarks (`iceberg catalog-read`, `catalog-commits`, `catalog-mixed`, `sustained`) |
 | [docs/Warp-streaming-log-Design.md](docs/Warp-streaming-log-Design.md) | Design notes for the streaming log writer |
+| [scripts/](scripts/) | Convenience run scripts for common benchmark configurations |
+| [CHANGELOG.md](CHANGELOG.md) | Release history and version notes |
 
 ---
 
@@ -42,6 +53,55 @@ Requires Go 1.21+.
 ---
 
 ## New Features in warp-replay
+
+### Parquet Benchmark (`parquet`) — *v1.4.1-replay.2*
+
+Benchmarks the full AI/ML Parquet three-phase I/O access pattern against any S3-compatible
+object store:
+
+1. **Footer range GET** — byte-range GET of the last `--footer-size` bytes.
+2. **Footer parse** — decode the Thrift CompactProtocol `FileMetaData` to extract
+   row-group offsets. This is a live correctness check: a server that returns
+   garbage bytes for a range request will fail here.
+3. **Row-group GETs** — `--rg-reads` parallel byte-range GETs at the real
+   row-group offsets from step 2.
+
+Objects are synthetically generated with real PAR1 magic and a valid Thrift-encoded
+footer — no external Parquet library required.
+
+```bash
+warp parquet --host localhost:9000 --access-key minioadmin --secret-key minioadmin \\
+  --bucket parquet-bench --objects 100 --obj.size 128MiB \\
+  --row-groups 10 --rg-size 8MiB --footer-size 128KiB \\
+  --rg-reads 2 --concurrent 8 --duration 2m
+```
+
+See [docs/README_PARQUET.md](docs/README_PARQUET.md) for the full flag reference,
+testing methodology, and worked examples.
+
+### h2c Transport (`--h2c`) — *v1.4.1-replay.2*
+
+Adds HTTP/2 cleartext (h2c, prior-knowledge) transport to every benchmark command.
+Useful for servers that speak h2c natively (such as s3-ultra) — warp now exercises
+the same protocol path as production AI/ML clients without TLS overhead.
+
+```bash
+# Force h2c — server must support prior-knowledge HTTP/2
+warp get --host=localhost:9000 --access-key=minioadmin --secret-key=minioadmin \
+    --h2c --concurrent 64
+
+# Explicit multi-connection pool (4 TCP sockets × N streams each)
+warp parquet --host=localhost:9000 --access-key=minioadmin --secret-key=minioadmin \
+    --h2c --h2c-conns 4 --h2c-window-mib 16 --obj.size 128MiB --concurrent 64
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--h2c` | false | HTTP/2 cleartext. Overrides `--tls`/`--ktls`. |
+| `--h2c-conns` | 0 (auto) | TCP connections. `0` = HTTP/1.1 below 64c, `ceil(c/32)` above. Set `≥1` to force. |
+| `--h2c-window-mib` | 0 (→ 4 MiB) | Per-stream receive window. Set ≥ 2× largest object size. |
+
+See [docs/README_H2C.md](docs/README_H2C.md) for full details and tuning guidance.
 
 ### Workload Replay (`replay`)
 
@@ -249,7 +309,7 @@ comparison with statistical significance testing, charts, and Excel export.
 warp-replay supports every benchmark from upstream warp unchanged:
 `get`, `put`, `delete`, `list`, `stat`, `mixed`, `versioned`, `multipart`,
 `multipart-put`, `append`, `zip`, `snowball`, `fanout`, `retention`, and
-the full Iceberg REST catalog suite.
+the full Iceberg REST catalog suite — plus the new `parquet` benchmark.
 
 See [docs/README-Upstream.md](docs/README-Upstream.md) for complete documentation
 of all benchmarks, configuration options, distributed mode, YAML config files,
