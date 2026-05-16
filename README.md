@@ -1,7 +1,7 @@
 # warp-replay
 
 **warp-replay** is a fork of [MinIO warp](https://github.com/minio/warp), the S3 benchmarking
-tool. It adds several capabilities on top of upstream warp:
+tool. It adds two significant capabilities on top of upstream warp:
 
 1. **Workload replay** — replay any prior warp trace (`.csv.zst`) against a new target, or replay
    traces produced by other tools.
@@ -10,13 +10,6 @@ tool. It adds several capabilities on top of upstream warp:
    in-memory `--full` PR (where RAM usage grows with every operation recorded), **warp-replay
    streams directly to disk and uses only a few MB of RAM regardless of run duration or
    concurrency level**.
-3. **Parquet benchmark** (`warp parquet`) — first Parquet-native benchmark in any warp variant;
-   exercises the three-phase AI/ML access pattern: one-time footer range GET + cache → parallel
-   row-group byte-range GETs (one HTTP request per row group, each recorded individually in the
-   op-log). Supports random-without-replacement and sequential (`--rg-sequential`) RG selection.
-   See [docs/README_PARQUET.md](docs/README_PARQUET.md).
-4. **h2c transport** (`--h2c`) — HTTP/2 cleartext (prior-knowledge) for servers that speak h2c
-   natively (e.g. s3-ultra), with a multi-connection pool and configurable stream window sizes.
 
 ---
 
@@ -25,12 +18,8 @@ tool. It adds several capabilities on top of upstream warp:
 | Document | Description |
 |----------|-------------|
 | [docs/README-Upstream.md](docs/README-Upstream.md) | Full upstream warp documentation (benchmarks, configuration, analysis, distributed mode, InfluxDB, …) |
-| [docs/README_PARQUET.md](docs/README_PARQUET.md) | Parquet benchmark (`warp parquet`) — concurrency model, op-log trace format, row-group selection modes, DLRM test results |
-| [docs/README_H2C.md](docs/README_H2C.md) | h2c transport (`--h2c`) — HTTP/2 cleartext with multi-connection pool and stream window tuning |
 | [docs/README_ICEBERG.md](docs/README_ICEBERG.md) | Iceberg REST catalog benchmarks (`iceberg catalog-read`, `catalog-commits`, `catalog-mixed`, `sustained`) |
 | [docs/Warp-streaming-log-Design.md](docs/Warp-streaming-log-Design.md) | Design notes for the streaming log writer |
-| [scripts/](scripts/) | Convenience run scripts for common benchmark configurations |
-| [CHANGELOG.md](CHANGELOG.md) | Release history and version notes |
 
 ---
 
@@ -53,55 +42,6 @@ Requires Go 1.21+.
 ---
 
 ## New Features in warp-replay
-
-### Parquet Benchmark (`parquet`) — *v1.4.1-replay.2*
-
-Benchmarks the full AI/ML Parquet three-phase I/O access pattern against any S3-compatible
-object store:
-
-1. **Footer range GET** — byte-range GET of the last `--footer-size` bytes.
-2. **Footer parse** — decode the Thrift CompactProtocol `FileMetaData` to extract
-   row-group offsets. This is a live correctness check: a server that returns
-   garbage bytes for a range request will fail here.
-3. **Row-group GETs** — `--rg-reads` parallel byte-range GETs at the real
-   row-group offsets from step 2.
-
-Objects are synthetically generated with real PAR1 magic and a valid Thrift-encoded
-footer — no external Parquet library required.
-
-```bash
-warp parquet --host localhost:9000 --access-key minioadmin --secret-key minioadmin \\
-  --bucket parquet-bench --objects 100 --obj.size 128MiB \\
-  --row-groups 10 --rg-size 8MiB --footer-size 128KiB \\
-  --rg-reads 2 --concurrent 8 --duration 2m
-```
-
-See [docs/README_PARQUET.md](docs/README_PARQUET.md) for the full flag reference,
-testing methodology, and worked examples.
-
-### h2c Transport (`--h2c`) — *v1.4.1-replay.2*
-
-Adds HTTP/2 cleartext (h2c, prior-knowledge) transport to every benchmark command.
-Useful for servers that speak h2c natively (such as s3-ultra) — warp now exercises
-the same protocol path as production AI/ML clients without TLS overhead.
-
-```bash
-# Force h2c — server must support prior-knowledge HTTP/2
-warp get --host=localhost:9000 --access-key=minioadmin --secret-key=minioadmin \
-    --h2c --concurrent 64
-
-# Explicit multi-connection pool (4 TCP sockets × N streams each)
-warp parquet --host=localhost:9000 --access-key=minioadmin --secret-key=minioadmin \
-    --h2c --h2c-conns 4 --h2c-window-mib 16 --obj.size 128MiB --concurrent 64
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--h2c` | false | HTTP/2 cleartext. Overrides `--tls`/`--ktls`. |
-| `--h2c-conns` | 0 (auto) | TCP connections. `0` = HTTP/1.1 below 64c, `ceil(c/32)` above. Set `≥1` to force. |
-| `--h2c-window-mib` | 0 (→ 4 MiB) | Per-stream receive window. Set ≥ 2× largest object size. |
-
-See [docs/README_H2C.md](docs/README_H2C.md) for full details and tuning guidance.
 
 ### Workload Replay (`replay`)
 
@@ -132,8 +72,10 @@ Adding `--full` to any benchmark command writes **both** output files:
 
 | File | Contents |
 |------|----------|
-| `<benchdata>.csv.zst` | Every individual request — one row per operation, zstandard-compressed CSV |
-| `<benchdata>.json.zst` | Aggregated summary (same as default) |
+| `<benchdata>.trace.tsv.zst` | Every individual request — one row per operation, zstandard-compressed TSV |
+| `<benchdata>.summary.tsv` | Aggregated per-second summary — plain (uncompressed) TSV, one row per second per op type |
+
+The summary file is always written; the trace file requires `--full`.
 
 ```bash
 warp put --host=... --full
@@ -243,29 +185,53 @@ uv run python docs/plot_actual_distributions.py
 
 ## Analyzing Results
 
-The built-in `warp analyze` command provides basic analysis. For **much faster,
-richer, and more flexible analysis** of `.csv.zst` trace files, use
-[**polarWarp**](https://github.com/russfellows/polarWarp):
+Every warp-replay run produces a **`<benchdata>.summary.tsv`** file — a plain,
+uncompressed tab-separated table with one row per second per operation type
+(`op`, `start`, `end`, `bps`, `ops_per_sec`, `errors`). This format is
+deliberately easy to open in Excel, import into pandas/polars, or feed into
+any analysis tool without a decompression step.
 
-> **[polarWarp](https://github.com/russfellows/polarWarp)** is a high-performance
-> analysis tool built on [Polars](https://pola.rs) that processes warp trace files
-> orders of magnitude faster than the built-in analyzer, with richer output,
-> filtering, and charting capabilities.
+When `--full` is also specified, a **`<benchdata>.trace.tsv.zst`** file is
+written alongside the summary — one row per individual HTTP request,
+zstd-compressed because these files can be large.
+
+### Recommended: polarWarp
+
+> **[polarWarp](https://github.com/russfellows/polarWarp)** is the strongly
+> recommended tool for all post-run analysis. It is a high-performance
+> Polars-based analyzer that reads both summary TSV and full trace files,
+> produces formatted terminal reports, and generates Excel workbooks with
+> embedded throughput and I/O-rate charts — orders of magnitude faster than
+> the built-in `warp analyze`, with richer output, filtering, and side-by-side
+> comparison support.
 
 ```bash
-# Built-in analyzer (slow on large traces)
-warp analyze --full warp-put-2026-04-07[162451]-abcd.csv.zst
+# Install polarWarp
+pip install polarwarp   # or: https://github.com/russfellows/polarWarp
 
-# polarWarp — recommended for all serious analysis
-pip install polarwarp   # or see https://github.com/russfellows/polarWarp
-polarwarp warp-put-2026-04-07[162451]-abcd.csv.zst
+# Analyze the summary file (always present — no --full needed)
+polarwarp warp-put-2026-05-16[120000]-abcd.summary.tsv
+
+# Analyze the full per-request trace (requires --full during the run)
+polarwarp warp-put-2026-05-16[120000]-abcd.trace.tsv.zst
+
+# Pass both at once — polarWarp merges summary stats and trace charts
+polarwarp warp-put-2026-05-16[120000]-abcd.summary.tsv \
+          warp-put-2026-05-16[120000]-abcd.trace.tsv.zst
+
+# Export an Excel workbook with embedded charts
+polarwarp --excel warp-put-2026-05-16[120000]-abcd.summary.tsv
 ```
 
-**polarWarp is particularly valuable for `.csv.zst` trace files** produced with
-`--full`, where the built-in analyzer must deserialize every row sequentially.
-polarWarp leverages Polars' parallel columnar engine and processes the same files
-in a fraction of the time — see [github.com/russfellows/polarWarp](https://github.com/russfellows/polarWarp)
-for benchmarks and usage.
+### Built-in analyzer
+
+The `warp analyze` command is available for quick checks but is significantly
+slower on large trace files and produces plain text only:
+
+```bash
+# Built-in analyzer — trace file only
+warp analyze --full warp-put-2026-05-16[120000]-abcd.trace.tsv.zst
+```
 
 ### Comparing runs
 
@@ -274,7 +240,7 @@ warp cmp before.csv.zst after.csv.zst
 ```
 
 Or use [polarWarp](https://github.com/russfellows/polarWarp) for side-by-side
-comparison with statistical significance testing and charts.
+comparison with statistical significance testing, charts, and Excel export.
 
 ---
 
@@ -283,7 +249,7 @@ comparison with statistical significance testing and charts.
 warp-replay supports every benchmark from upstream warp unchanged:
 `get`, `put`, `delete`, `list`, `stat`, `mixed`, `versioned`, `multipart`,
 `multipart-put`, `append`, `zip`, `snowball`, `fanout`, `retention`, and
-the full Iceberg REST catalog suite — plus the new `parquet` benchmark.
+the full Iceberg REST catalog suite.
 
 See [docs/README-Upstream.md](docs/README-Upstream.md) for complete documentation
 of all benchmarks, configuration options, distributed mode, YAML config files,
@@ -300,16 +266,19 @@ git clone https://github.com/russfellows/warp-replay.git
 cd warp-replay
 make
 
-# Run a PUT benchmark with full per-transaction logging
+# Run a PUT benchmark — summary TSV is always written;
+# add --full to also capture every individual request
 ./warp put --host=minio:9000 --access-key=minio --secret-key=minio123 \
     --duration=60s --full
 
-# Analyze with polarWarp (recommended)
+# Analyze with polarWarp (strongly recommended)
 # https://github.com/russfellows/polarWarp
-polarwarp warp-put-*.csv.zst
+polarwarp warp-put-*.summary.tsv               # summary report + charts
+polarwarp warp-put-*.trace.tsv.zst             # full per-request trace
+polarwarp --excel warp-put-*.summary.tsv       # export Excel workbook
 
-# Or with the built-in analyzer
-./warp analyze --full warp-put-*.csv.zst
+# Or with the built-in analyzer (trace file only)
+./warp analyze --full warp-put-*.trace.tsv.zst
 
 # Replay the recorded workload against a different target
 ./warp replay --file=warp-put-*.csv.zst \

@@ -342,7 +342,9 @@ func getCommon(ctx *cli.Context, src func() generator.Source) bench.Common {
 		globalQuiet = true
 		statusln = func(_ string) {}
 		so := make(chan bench.Operation, 1000)
+		globalWG.Add(1)
 		go func() {
+			defer globalWG.Done()
 			i := 0
 			var errState bool
 			for op := range so {

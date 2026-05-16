@@ -170,6 +170,63 @@ When `--autoterm` enabled:
 - Must maintain stability for `--autoterm.dur` (default 15s)
 - Prevents premature termination during warmup or unstable periods
 
+## Known Bugs
+
+### `parquet` benchmark — `panic: send on closed channel` at benchmark end
+
+**Observed**: 2026-05-08. Affects both `run_parquet_bench.sh` and `run_parquet_s3ultra.sh`.
+
+**Symptom**: At the end of every `warp parquet` run the process panics with:
+```
+warp: <ERROR> parquet get error: context deadline exceeded
+panic: send on closed channel
+
+goroutine NNNN [running]:
+github.com/minio/warp/pkg/bench.(*Parquet).doParquetGet.func1(...)
+    /…/warp/pkg/bench/parquet.go:722 +0x745
+```
+
+**Root cause** (`pkg/bench/parquet.go`, `doParquetGet`):
+
+`doParquetGet` spawns `actualReads` goroutines that each send one result to `rgCh`
+(a buffered channel sized to `actualReads`).  The collector loop drains `rgCh` with a
+`select { case <-ctx.Done() ... case r := <-rgCh ... }`.  When `ctx.Done()` fires (the
+benchmark timer expires), the collector exits early and spawns a background drainer
+goroutine to consume the remaining `k = actualReads - j` results.
+
+The race: if the background drainer has already consumed all remaining results and
+returned (or was never needed because all goroutines had already sent), any goroutine
+that fires AFTER the collector exits will still try to send to `rgCh`.  Because the
+channel was a local variable and neither it nor its sender goroutines are tracked
+elsewhere, the send races against Go's GC / finaliser, but more critically: the channel
+may already be considered "closed" from the perspective of a cancelled context (it is
+not actually `close()`d, but the panic implies another code path does close it).
+
+A secondary trigger: `rcv <- op` in the same goroutines sends to the `Collector`
+receiver channel, which IS closed by the collector framework at benchmark end.  This is
+the actual source of the "send on closed channel" panic — not `rgCh` itself.  After the
+benchmark duration fires, `c.Receiver()` returns a channel that is subsequently closed
+by the collector; any in-flight goroutine that then calls `rcv <- op` panics.
+
+**Fix strategy**:
+1. Wrap every `rcv <- op` in `doParquetGet`'s goroutines with a `select`:
+   ```go
+   select {
+   case rcv <- op:
+   case <-ctx.Done():
+   }
+   ```
+2. Do the same for `rgCh <- rgResult{...}` so goroutines don't block after the
+   collector exits.
+3. Alternatively, recover from the panic at the top of each goroutine with
+   `defer func() { recover() }()` — simpler but masks future bugs.
+
+**Impact**: Benchmark results are complete and correct (the panic fires after all 1-minute
+data has been collected).  The exit code is 2 instead of 0, which breaks `set -e` scripts.
+The data `.csv.zst` file may not be written if the panic fires before `Cleanup()` flushes.
+
+---
+
 ## Common Issues
 
 ### 32-bit Architectures

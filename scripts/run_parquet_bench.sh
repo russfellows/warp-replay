@@ -34,9 +34,9 @@ for arg in "$@"; do
     fi
 done
 
-HOST="127.0.0.1:9200"
-ACCESS_KEY="minioadmin"
-SECRET_KEY="minioadmin"
+HOST="127.0.0.1:9000"
+ACCESS_KEY="test"
+SECRET_KEY="test"
 BUCKET="mlp-flux"
 RG_READS=4
 

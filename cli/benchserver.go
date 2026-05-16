@@ -276,7 +276,7 @@ func runServerBenchmark(ctx *cli.Context, b bench.Benchmark) (bool, error) {
 
 		if len(allOps) > 0 {
 			allOps.SortByStartTime()
-			f, err := os.Create(fileName + ".csv.zst")
+			f, err := os.Create(fileName + ".trace.tsv.zst")
 			if err != nil {
 				errorLn("Unable to write benchmark data:", err)
 			} else {
@@ -289,31 +289,27 @@ func runServerBenchmark(ctx *cli.Context, b bench.Benchmark) (bool, error) {
 					err = allOps.CSV(enc, commandLine(ctx))
 					fatalIf(probe.NewError(err), "Unable to write benchmark output")
 
-					infoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".csv.zst"))
+					infoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".trace.tsv.zst"))
 				}()
 			}
 		}
-		// --full is additive: also download and write the json.zst aggregate.
+		// --full is additive: also download and write the summary.tsv aggregate.
 		{
 			final := conns.downloadAggr()
 			final.Commandline = commandLine(ctx)
 			final.WarpVersion = GlobalVersion
 			final.WarpDate = GlobalDate
 			final.WarpCommit = GlobalCommit
-			f, err := os.Create(fileName + ".json.zst")
+			f, err := os.Create(fileName + ".summary.tsv")
 			if err != nil {
 				monitor.Errorln("Unable to write benchmark data:", err)
 			} else {
 				func() {
 					defer f.Close()
-					enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-					fatalIf(probe.NewError(err), "Unable to compress benchmark output")
-					defer enc.Close()
-					js := json.NewEncoder(enc)
-					js.SetIndent("", "  ")
-					err = js.Encode(final)
-					fatalIf(probe.NewError(err), "Unable to write benchmark output")
-					monitor.InfoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".json.zst"))
+					if err = final.WriteTSV(f, commandLine(ctx)); err != nil {
+						monitor.Errorln("Unable to write benchmark data:", err)
+					}
+					monitor.InfoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".summary.tsv"))
 				}()
 			}
 			monitor.UpdateAggregate(&final, fileName)
@@ -331,21 +327,16 @@ func runServerBenchmark(ctx *cli.Context, b bench.Benchmark) (bool, error) {
 		final.WarpVersion = GlobalVersion
 		final.WarpDate = GlobalDate
 		final.WarpCommit = GlobalCommit
-		f, err := os.Create(fileName + ".json.zst")
+		f, err := os.Create(fileName + ".summary.tsv")
 		if err != nil {
 			monitor.Errorln("Unable to write benchmark data:", err)
 		} else {
 			func() {
 				defer f.Close()
-				enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedBetterCompression))
-				fatalIf(probe.NewError(err), "Unable to compress benchmark output")
-				defer enc.Close()
-				js := json.NewEncoder(enc)
-				js.SetIndent("", "  ")
-				err = js.Encode(final)
-				fatalIf(probe.NewError(err), "Unable to write benchmark output")
-
-				monitor.InfoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".json.zst"))
+				if err = final.WriteTSV(f, commandLine(ctx)); err != nil {
+					monitor.Errorln("Unable to write benchmark data:", err)
+				}
+				monitor.InfoLn(fmt.Sprintf("Benchmark data written to %q\n", fileName+".summary.tsv"))
 			}()
 		}
 		monitor.UpdateAggregate(&final, fileName)
