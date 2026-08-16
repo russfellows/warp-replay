@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -40,11 +41,12 @@ import (
 //  2. Send ops to Receiver().
 //  3. Call Close() to flush and finalize.
 type StreamingOpsWriter struct {
-	ch       chan Operation
-	done     chan struct{}
-	clientID string
-	cmdLine  string
-	err      error
+	ch        chan Operation
+	done      chan struct{}
+	clientID  string
+	cmdLine   string
+	err       error
+	closeOnce sync.Once
 }
 
 // NewStreamingOpsWriter creates the output file immediately, writes the TSV
@@ -70,7 +72,7 @@ func NewStreamingOpsWriter(path, clientID, cmdLine string) (*StreamingOpsWriter,
 
 	// Write the header immediately so the file is valid even if the benchmark
 	// is interrupted before any ops complete.
-	const header = "idx\tthread\top\tclient_id\tn_objects\tbytes\tendpoint\tfile\terror\tstart\tfirst_byte\tend\tduration_ns\tcat\n"
+	const header = "idx\tthread\top\tclient_id\tn_objects\tbytes\tendpoint\tfile\terror\tstart\tfirst_byte\tlast_byte\tend\tduration_ns\tcat\n"
 	if _, err := bw.WriteString(header); err != nil {
 		enc.Close()
 		f.Close()
@@ -134,11 +136,17 @@ func (w *StreamingOpsWriter) Receiver() chan<- Operation {
 }
 
 // Close stops accepting operations and waits for all buffered operations to be
-// flushed to disk.  For standalone / test use only.  When the writer is wired
-// through a Collector, use Wait() instead — Collector.Close() already closes
-// the channel; calling Close() afterwards would panic on double-close.
+// flushed to disk. It is safe to call repeatedly or after a Collector has
+// already closed the receiver channel.
 func (w *StreamingOpsWriter) Close() error {
-	close(w.ch)
+	w.closeOnce.Do(func() {
+		func() {
+			defer func() {
+				_ = recover() // The collector may already own and close this channel.
+			}()
+			close(w.ch)
+		}()
+	})
 	return w.Wait()
 }
 

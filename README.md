@@ -29,6 +29,7 @@ tool. It adds several capabilities on top of upstream warp:
 | [docs/README_H2C.md](docs/README_H2C.md) | h2c transport (`--h2c`) — HTTP/2 cleartext with multi-connection pool and stream window tuning |
 | [docs/README_ICEBERG.md](docs/README_ICEBERG.md) | Iceberg REST catalog benchmarks (`iceberg catalog-read`, `catalog-commits`, `catalog-mixed`, `sustained`) |
 | [docs/Warp-streaming-log-Design.md](docs/Warp-streaming-log-Design.md) | Design notes for the streaming log writer |
+| [RDMA.md](RDMA.md) | MinIO's S3-over-RDMA build, installation, and usage guide |
 | [scripts/](scripts/) | Convenience run scripts for common benchmark configurations |
 | [CHANGELOG.md](CHANGELOG.md) | Release history and version notes |
 
@@ -48,7 +49,7 @@ make clean     # remove built binary
 go build -o warp .
 ```
 
-Requires Go 1.21+.
+Requires Go 1.25.5+; the module selects the Go 1.26.6 toolchain.
 
 ---
 

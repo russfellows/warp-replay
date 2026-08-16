@@ -170,12 +170,7 @@ func TestAddCollector_FullMode_LiveCollectorAlsoReceivesOps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // Without --full the live collector is the sole collector.
-// We verify the updates channel is non-nil and functional. We cannot safely
-// call requestFinal in this case because aggregate.collector.Close() sets its
-// internal channel field to nil — if the LiveCollector goroutine reads after
-// that, it would block on a nil channel range. In production this is fine
-// because Close() is called minutes into a benchmark; in tests we avoid the
-// race by only checking structural invariants here.
+// Verify the updates channel remains available after collector shutdown.
 func TestAddCollector_DefaultMode_UpdatesChannelFunctional(t *testing.T) {
 	ctx := makeCtx(false)
 	b := &stubBench{}
@@ -552,5 +547,42 @@ func TestAddCollector_Streaming_EndToEnd(t *testing.T) {
 		if op.ClientID != wantClientID {
 			t.Errorf("op[%d] ClientID: got %q, want %q", i, op.ClientID, wantClientID)
 		}
+	}
+}
+
+func TestFinalizeCollector_WaitsForStreamingWriter(t *testing.T) {
+	path := t.TempDir() + "/finalized.trace.tsv.zst"
+	w, err := bench.NewStreamingOpsWriter(path, "finalID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+	collector := bench.NewNullCollector(w.Receiver())
+	collector.Receiver() <- bench.Operation{
+		OpType: "GET",
+		Start:  time.Now(),
+		End:    time.Now().Add(time.Millisecond),
+		Size:   1024,
+	}
+
+	if err := finalizeCollector(collector, w); err != nil {
+		t.Fatalf("finalizeCollector: %v", err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open finalized trace: %v", err)
+	}
+	defer f.Close()
+	dec, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatalf("zstd.NewReader: %v", err)
+	}
+	defer dec.Close()
+	ops, err := bench.OperationsFromCSV(dec, false, 0, 0, t.Logf)
+	if err != nil {
+		t.Fatalf("OperationsFromCSV: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("expected 1 finalized operation, got %d", len(ops))
 	}
 }

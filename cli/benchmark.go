@@ -471,7 +471,7 @@ var benchmarkStages = []benchmarkStage{
 	stagePrepare, stageBenchmark, stageCleanup,
 }
 
-func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark) error {
+func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark) (retErr error) {
 	err := cb.waitForStage(stagePrepare)
 	if err != nil {
 		return err
@@ -504,7 +504,19 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 		fullExtra = []chan<- bench.Operation{csvWriter.Receiver()}
 	}
 	retrieveOps, updates := addCollector(ctx, b, fullExtra...)
-	defer common.Collector.Close()
+	finalized := false
+	defer func() {
+		if finalized {
+			return
+		}
+		if err := finalizeCollector(common.Collector, csvWriter); err != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("finalize benchmark output: %w", err)
+			} else {
+				console.Errorln("Error finalizing benchmark data:", err)
+			}
+		}
+	}()
 
 	cb.Lock()
 	benchStage := cb.info[stageBenchmark]
@@ -554,17 +566,14 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 	if err != nil {
 		return err
 	}
-	// Close collector — this also closes the streaming writer's channel if present.
-	common.Collector.Close()
-
-	// Flush streaming writer to disk.
-	if csvWriter != nil {
-		if werr := csvWriter.Wait(); werr != nil {
+	if werr := finalizeCollector(common.Collector, csvWriter); werr != nil {
+		if csvWriter != nil {
 			console.Errorln("Error finalizing benchmark data:", werr)
-		} else {
-			console.Infof("Benchmark data written to %q\n", fileName+".trace.tsv.zst")
 		}
+	} else if csvWriter != nil {
+		console.Infof("Benchmark data written to %q\n", fileName+".trace.tsv.zst")
 	}
+	finalized = true
 
 	// Write aggregate summary as TSV.
 	if updates != nil {
@@ -599,6 +608,14 @@ func runClientBenchmark(ctx *cli.Context, b bench.Benchmark, cb *clientBenchmark
 	}
 	cb.stageDone(stageCleanup, nil, common.Custom)
 
+	return nil
+}
+
+func finalizeCollector(collector bench.Collector, writer *bench.StreamingOpsWriter) error {
+	collector.Close()
+	if writer != nil {
+		return writer.Close()
+	}
 	return nil
 }
 

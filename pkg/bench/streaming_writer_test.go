@@ -366,3 +366,59 @@ func TestStreamingWriter_ConcurrentSends(t *testing.T) {
 		t.Errorf("expected %d ops, got %d", want, len(ops))
 	}
 }
+
+func TestStreamingWriter_CloseIsIdempotent(t *testing.T) {
+	path := t.TempDir() + "/idempotent.trace.tsv.zst"
+
+	w, err := NewStreamingOpsWriter(path, "closeID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+	w.Receiver() <- makeOp(0, 1024)
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestStreamingWriter_ConcurrentCloseIsIdempotent(t *testing.T) {
+	path := t.TempDir() + "/concurrent-close.trace.tsv.zst"
+
+	w, err := NewStreamingOpsWriter(path, "closeID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+	w.Receiver() <- makeOp(0, 1024)
+
+	const closers = 8
+	errs := make(chan error, closers)
+	for range closers {
+		go func() {
+			errs <- w.Close()
+		}()
+	}
+	for range closers {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Close: %v", err)
+		}
+	}
+}
+
+func TestStreamingWriter_CloseAfterCollectorClose(t *testing.T) {
+	path := t.TempDir() + "/collector-close.trace.tsv.zst"
+
+	w, err := NewStreamingOpsWriter(path, "collectorID", "")
+	if err != nil {
+		t.Fatalf("NewStreamingOpsWriter: %v", err)
+	}
+	collector := NewNullCollector(w.Receiver())
+	collector.Receiver() <- makeOp(0, 1024)
+	collector.Close()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close after collector close: %v", err)
+	}
+}
