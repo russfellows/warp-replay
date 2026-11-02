@@ -1,9 +1,13 @@
 > [!IMPORTANT]
-> **warp-replay is no longer maintained, and this repository is archived (read-only).**
-> For workload replay and S3 benchmarking, use **[sai3-bench](https://github.com/russfellows/sai3-bench)**,
-> which replays s3dlio op-logs with original timing, a speed factor and bucket/endpoint remapping,
-> and also supports Google Cloud, Azure and local storage. See its
+> ## warp-replay has been replaced by [sai3-bench](https://github.com/russfellows/sai3-bench)
+>
+> **[sai3-bench](https://github.com/russfellows/sai3-bench) is the successor to warp-replay.** All new
+> development of workload replay and S3 benchmarking happens there. sai3-bench replays s3dlio op-logs
+> with original timing, a speed factor and bucket/endpoint remapping, and also supports Google Cloud,
+> Azure and local storage. Start with its
 > [Workload Replay](https://github.com/russfellows/sai3-bench#-workload-replay) section.
+>
+> warp-replay is no longer maintained, and this repository is archived (read-only).
 > Issues and pull requests here will not be answered.
 
 # warp-replay
