@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> **warp-replay is no longer maintained, and this repository is archived (read-only).**
+> For workload replay and S3 benchmarking, use **[sai3-bench](https://github.com/russfellows/sai3-bench)**,
+> which replays s3dlio op-logs with original timing, a speed factor and bucket/endpoint remapping,
+> and also supports Google Cloud, Azure and local storage. See its
+> [Workload Replay](https://github.com/russfellows/sai3-bench#-workload-replay) section.
+> Issues and pull requests here will not be answered.
+
 # warp-replay
 
 **warp-replay** is a fork of [MinIO warp](https://github.com/minio/warp), the S3 benchmarking
